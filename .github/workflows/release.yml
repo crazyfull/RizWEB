@@ -1,0 +1,190 @@
+name: Release (manual)
+
+# Runs only when started by hand (Actions tab -> "Release (manual)" -> Run workflow).
+# Builds RizWEB for Linux (netRector), Windows and macOS (netRectorClient), all with BoringSSL,
+# and publishes the archives as a GitHub Release.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without the leading v (tag becomes v<version>)"
+        required: true
+        default: "1.4.0"
+      draft:
+        description: "Create the release as a draft"
+        type: boolean
+        default: true
+      prerelease:
+        description: "Mark as pre-release"
+        type: boolean
+        default: false
+      netrector_ref:
+        description: "crazyfull/netRector ref (Linux backend)"
+        default: "main"
+      netrector_client_ref:
+        description: "crazyfull/netRectorClient ref (Windows / macOS backend)"
+        default: "main"
+      boringssl_ref:
+        description: "google/boringssl commit (must work with netRector's patch_boringssl.sh)"
+        default: "289645a450721a7210bf9c69d42bf40a0f1ee730"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64,   os: ubuntu-22.04,     backend: netRector,       archive: tar.gz }
+          - { name: linux-arm64,    os: ubuntu-22.04-arm, backend: netRector,       archive: tar.gz }
+          - { name: windows-x86_64, os: windows-latest,   backend: netRectorClient, archive: zip }
+          - { name: macos-arm64,    os: macos-latest,     backend: netRectorClient, archive: tar.gz, osx_arch: arm64 }
+          - { name: macos-x86_64,   os: macos-latest,     backend: netRectorClient, archive: tar.gz, osx_arch: x86_64 }
+
+    env:
+      BACKEND_DIR: ${{ github.workspace }}/deps/${{ matrix.backend }}
+      BSSL_PREFIX: ${{ github.workspace }}/deps/boringssl-install
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout ${{ matrix.backend }}
+        uses: actions/checkout@v4
+        with:
+          repository: crazyfull/${{ matrix.backend }}
+          ref: ${{ matrix.backend == 'netRector' && inputs.netrector_ref || inputs.netrector_client_ref }}
+          path: deps/${{ matrix.backend }}
+
+      - name: Tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build zlib1g-dev golang-go
+
+      - name: Tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Tools (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ninja -y --no-progress
+
+      - name: MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Windows zlib (vcpkg, static)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: vcpkg install zlib:x64-windows-static
+
+      - name: Cache BoringSSL
+        id: bssl-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BSSL_PREFIX }}
+          key: bssl-${{ matrix.name }}-${{ inputs.boringssl_ref }}-${{ hashFiles('deps/**/scripts/patch_boringssl.sh') }}
+
+      - name: Build patched BoringSSL
+        if: steps.bssl-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/google/boringssl.git deps/boringssl-src
+          git -C deps/boringssl-src checkout "${{ inputs.boringssl_ref }}"
+          "$BACKEND_DIR/scripts/patch_boringssl.sh" deps/boringssl-src
+          EXTRA=()
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            EXTRA+=(-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DOPENSSL_NO_ASM=ON -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl)
+          fi
+          if [ -n "${{ matrix.osx_arch }}" ]; then
+            EXTRA+=(-DCMAKE_OSX_ARCHITECTURES=${{ matrix.osx_arch }})
+          fi
+          cmake -GNinja -S deps/boringssl-src -B deps/boringssl-build -DCMAKE_BUILD_TYPE=Release "${EXTRA[@]}"
+          ninja -C deps/boringssl-build crypto ssl
+          mkdir -p "$BSSL_PREFIX/lib"
+          find deps/boringssl-build -maxdepth 2 \( -name 'libssl.a' -o -name 'libcrypto.a' -o -name 'ssl.lib' -o -name 'crypto.lib' \) -exec cp {} "$BSSL_PREFIX/lib/" \;
+          cp -r deps/boringssl-src/include "$BSSL_PREFIX/include"
+
+      - name: Configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXTRA=()
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            EXTRA+=(-DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+                    "-DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+                    -DVCPKG_TARGET_TRIPLET=x64-windows-static -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded)
+          fi
+          if [ -n "${{ matrix.osx_arch }}" ]; then
+            EXTRA+=(-DCMAKE_OSX_ARCHITECTURES=${{ matrix.osx_arch }})
+          fi
+          cmake -GNinja -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DNETRECTOR_DIR="$BACKEND_DIR" \
+            -DRIZWEB_BORINGSSL_DIR="$BSSL_PREFIX" \
+            -DRIZWEB_ENABLE_TLS=ON -DRIZWEB_STATIC=ON "${EXTRA[@]}"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Smoke test (not on the cross-compiled macOS build)
+        if: runner.os == 'Linux' || (runner.os == 'macOS' && matrix.osx_arch == 'arm64') || runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p smoke/www && echo ok > smoke/www/index.html
+          BIN="$(find build -maxdepth 1 -name 'rizweb*' -type f \( -perm -u+x -o -name '*.exe' \) | head -1)"
+          cp "$BIN" smoke/ && cd smoke
+          printf '[httpServer]\nPort = 18080\nLocatedRoot = %s/www\n' "$PWD" > settings.ini
+          ./"$(basename "$BIN")" > server.log 2>&1 &
+          sleep 3
+          curl -fsS http://127.0.0.1:18080/ | grep -q '^ok'
+          kill %1 || true
+
+      - name: Install and package
+        shell: bash
+        run: |
+          PKG="rizweb-${{ inputs.version }}-${{ matrix.name }}"
+          cmake --install build --prefix "dist/$PKG"
+          if [ "$RUNNER_OS" != "Windows" ]; then strip "dist/$PKG/bin/rizweb" || true; fi
+          cp README.md "dist/$PKG/" || true
+          echo "PKG=$PKG" >> "$GITHUB_ENV"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            (cd dist && 7z a -tzip "../$PKG.zip" "$PKG" > /dev/null)
+          else
+            tar -C dist -czf "$PKG.tar.gz" "$PKG"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ env.PKG }}.${{ matrix.archive }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: out
+        run: sha256sum * > SHA256SUMS.txt
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          FLAGS="--generate-notes"
+          [ "${{ inputs.prerelease }}" = "true" ] && FLAGS="$FLAGS --prerelease"
+          [ "${{ inputs.draft }}" = "true" ] && FLAGS="$FLAGS --draft"
+          gh release create "v${{ inputs.version }}" out/* \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "RizWEB ${{ inputs.version }}" $FLAGS

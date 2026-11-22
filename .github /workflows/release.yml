@@ -1,0 +1,156 @@
+name: Release (manual)
+
+# Only runs when you press "Run workflow" in the Actions tab.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. 1.3.45 (tag becomes v1.3.45)"
+        required: true
+        default: "1.3.45"
+      prerelease:
+        description: "Mark as pre-release"
+        type: boolean
+        default: false
+      draft:
+        description: "Create as draft (review before publishing)"
+        type: boolean
+        default: true
+      enable_tls:
+        description: "Build with TLS (needs patched BoringSSL; not wired up yet)"
+        type: boolean
+        default: false
+      netrector_ref:
+        description: "crazyfull/netRector branch/tag/sha (Linux backend)"
+        default: "main"
+      netrector_client_ref:
+        description: "crazyfull/netRectorClient branch/tag/sha (Windows/macOS backend)"
+        default: "main"
+
+permissions:
+  contents: write   # needed to create the release
+
+jobs:
+  build:
+    name: build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            backend: netRector
+            archive: tar.gz
+          - name: linux-arm64
+            os: ubuntu-22.04-arm
+            backend: netRector
+            archive: tar.gz
+          - name: windows-x86_64
+            os: windows-latest
+            backend: netRectorClient
+            archive: zip
+          - name: macos-arm64
+            os: macos-latest
+            backend: netRectorClient
+            archive: tar.gz
+            osx_arch: arm64
+          - name: macos-x86_64
+            os: macos-latest          # cross-compiled on the arm64 runner
+            backend: netRectorClient
+            archive: tar.gz
+            osx_arch: x86_64
+
+    steps:
+      - name: Checkout RizWEB
+        uses: actions/checkout@v4
+
+      - name: Checkout ${{ matrix.backend }}
+        uses: actions/checkout@v4
+        with:
+          repository: crazyfull/${{ matrix.backend }}
+          ref: ${{ matrix.backend == 'netRector' && inputs.netrector_ref || inputs.netrector_client_ref }}
+          path: deps/${{ matrix.backend }}
+
+      - name: Install build deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build zlib1g-dev
+
+      - name: Install zlib (Windows, static, vcpkg)
+        if: runner.os == 'Windows'
+        run: vcpkg install zlib:x64-windows-static
+
+      - name: Configure (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: |
+          EXTRA=""
+          if [ -n "${{ matrix.osx_arch }}" ]; then EXTRA="-DCMAKE_OSX_ARCHITECTURES=${{ matrix.osx_arch }}"; fi
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DRIZWEB_NET_BACKEND=${{ matrix.backend }} \
+            -DNETRECTOR_DIR="$PWD/deps/${{ matrix.backend }}" \
+            -DRIZWEB_ENABLE_TLS=${{ inputs.enable_tls && 'ON' || 'OFF' }} \
+            -DRIZWEB_STATIC=ON $EXTRA
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake -S . -B build -A x64 `
+            -DRIZWEB_NET_BACKEND=${{ matrix.backend }} `
+            -DNETRECTOR_DIR="$env:GITHUB_WORKSPACE/deps/${{ matrix.backend }}" `
+            -DRIZWEB_ENABLE_TLS=${{ inputs.enable_tls && 'ON' || 'OFF' }} `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Stage files
+        shell: bash
+        run: |
+          PKG="rizweb-${{ inputs.version }}-${{ matrix.name }}"
+          cmake --install build --config Release --prefix "dist/$PKG"
+          echo "PKG=$PKG" >> "$GITHUB_ENV"
+
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: tar -C dist -czf "$PKG.tar.gz" "$PKG"
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: Compress-Archive -Path "dist/$env:PKG" -DestinationPath "$env:PKG.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ env.PKG }}.${{ matrix.archive }}
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: out
+        run: sha256sum * > SHA256SUMS.txt
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          FLAGS="--generate-notes"
+          if [ "${{ inputs.prerelease }}" = "true" ]; then FLAGS="$FLAGS --prerelease"; fi
+          if [ "${{ inputs.draft }}" = "true" ]; then FLAGS="$FLAGS --draft"; fi
+          gh release create "v${{ inputs.version }}" out/* \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "RizWEB ${{ inputs.version }}" $FLAGS

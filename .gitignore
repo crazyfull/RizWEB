@@ -1,7 +1,6 @@
 build/
 cmake-build-*/
+*.a
+*.o
 *.user
-*.autosave
-.vscode/
-.idea/
-CMakeLists.txt.user
+settings.ini

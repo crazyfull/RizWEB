@@ -47,6 +47,7 @@ if(NOT TARGET ${RIZWEB_BACKEND_NAME})
         include(FetchContent)
         FetchContent_Declare(${RIZWEB_BACKEND_NAME}
             GIT_REPOSITORY https://github.com/crazyfull/${RIZWEB_BACKEND_NAME}.git
+            GIT_TAG ${RIZWEB_BACKEND_TAG})
 
         FetchContent_GetProperties(${RIZWEB_BACKEND_NAME})
         if(NOT ${RIZWEB_BACKEND_NAME}_POPULATED)
@@ -134,7 +135,7 @@ if(RIZWEB_BUILD_APP)
     set_target_properties(RizWEBApp PROPERTIES OUTPUT_NAME "rizweb")
     target_link_libraries(RizWEBApp PRIVATE RizWEB)
     if(RIZWEB_STATIC AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        target_link_options(rizweb PRIVATE -static -static-libgcc -static-libstdc++)
+        target_link_options(RizWEBApp PRIVATE -static -static-libgcc -static-libstdc++)
     endif()
     install(TARGETS RizWEBApp RUNTIME DESTINATION bin)
 endif()

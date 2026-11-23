@@ -97,6 +97,29 @@ bool WEBMaster::createTlsContext()
     return true;
 }
 
+HTTPRouter::Route &WEBMaster::upload(const std::string &pattern, UploadOptions options, UploadHandler handler)
+{
+    return m_router.addStream(HTTPMethod::Post, pattern,
+        [options = std::move(options), handler = std::move(handler)](HTTPClient &client, HTTPRequest &request, HTTPResponse &response) {
+            return makeMultipartUploadSink(options, handler, client, request, response);
+        });
+}
+
+HTTPRouter::Route &WEBMaster::uploadProgress(const std::string &pattern)
+{
+    return m_router.add(HTTPMethod::Get, pattern, [this](HTTPClient &, HTTPRequest &request, HTTPResponse &response) {
+        std::string json = m_uploadTracker.toJson(request.param("id"));
+        if (json.empty()) {
+            response.notFound();
+            return;
+        }
+        response.setContentType("application/json; charset=utf-8");
+        response.setHeaderField("Cache-Control", "no-store");
+        response.write(json);
+        response.flush(200);
+    });
+}
+
 bool WEBMaster::start()
 {
     if (m_running)

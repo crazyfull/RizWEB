@@ -1,6 +1,7 @@
 #ifndef CLSHTTPROUTER_H
 #define CLSHTTPROUTER_H
 #include "clsHTTPRequest.h"
+#include "clsHTTPUpload.h"
 #include <functional>
 #include <memory>
 #include <string>
@@ -37,12 +38,14 @@ public:
         std::string pattern;
         RouteHandler handler;
         std::shared_ptr<const WebSocketEndpoint> webSocket;   // set for ws() routes
+        UploadFactory stream;                                 // set for stream() / upload() routes: the body is not buffered
         size_t bodyLimit = 0;                                 // 0 = server default
     };
 
     enum class Result { Found, NotFound, MethodNotAllowed };
 
     Route &add(HTTPMethod method, const std::string &pattern, RouteHandler handler);
+    Route &addStream(HTTPMethod method, const std::string &pattern, UploadFactory factory);
     Route &addWebSocket(const std::string &pattern, WebSocketEndpoint endpoint);
     bool isEmpty() const { return m_count == 0; }
 
@@ -50,6 +53,8 @@ public:
     // HEAD falls back to GET. On MethodNotAllowed, |allow| lists the methods that would match.
     Result match(HTTPMethod method, const std::string &path, const Route *&route,
                  std::vector<std::pair<std::string, std::string>> &params, std::string &allow) const;
+    // The streaming route of this request, or nullptr (used before the body is read).
+    const Route *streamRouteFor(HTTPMethod method, const std::string &path) const;
     // Body limit configured for the route of this request (0 = none configured).
     size_t bodyLimitFor(HTTPMethod method, const std::string &path) const;
 

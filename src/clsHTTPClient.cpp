@@ -53,6 +53,17 @@ void HTTPClient::setIdleTimeoutEnabled(bool enabled)
 // socket events
 // ---------------------------------------------------------------------------------------------
 
+struct HTTPClient::UploadSession
+{
+    std::unique_ptr<UploadSink> sink;
+    HTTPBodyDecoder decoder;
+    uint64_t limit = 0;
+    std::shared_ptr<UploadProgress> progress;
+    bool sinkRejected = false;
+
+    UploadSession(std::unique_ptr<UploadSink> s, HTTPBodyDecoder d, uint64_t l) : sink(std::move(s)), decoder(d), limit(l) {}
+};
+
 void HTTPClient::onAccepted()
 {
     uint16_t port = 0;
@@ -71,6 +82,12 @@ void HTTPClient::onAccepted()
 
 void HTTPClient::onClose()
 {
+    if (m_upload) {
+        if (m_upload->progress)
+            m_upload->progress->state = UploadProgress::Failed;
+        m_upload->sink->onAbort(nullptr);
+        m_upload.reset();
+    }
     if (m_limited) {
         m_master.limiter().releaseConnection(m_ip);
         m_limited = false;
@@ -103,6 +120,12 @@ void HTTPClient::onReceiveData(const uint8_t *data, size_t length)
         webSocketParse(text, length);
         return;
     }
+    if (m_upload) {                     // body of a streaming route: straight to the sink, no buffering
+        size_t used = feedUpload(text, length);
+        if (!m_upload && used < length && getStatus() == Connected)
+            handleInput(text + used, length - used);        // pipelined requests behind the body
+        return;
+    }
     sweepRetiredFiles(false);
     if (m_busy) {                       // a file is streaming: keep pipelined requests for later
         if (m_input.size() + length > kMaxPendingInput) {
@@ -129,9 +152,9 @@ void HTTPClient::handleInput(const char *data, size_t length)
     const char *position = data;
     size_t left = length;
 
-    while (left > 0 && !m_busy && !m_webSocket && getStatus() == Connected) {
+    while (left > 0 && !m_busy && !m_webSocket && !m_upload && getStatus() == Connected) {
         m_request = HTTPRequest();
-        HTTPParseResult result = m_request.parse(position, left, m_master.settings().maxBodyBytes, &m_master.bodyLimitFunction());
+        HTTPParseResult result = m_request.parseHead(position, left);
         if (result == HTTPParseResult::Incomplete)
             break;
         if (result != HTTPParseResult::Completed) {
@@ -139,6 +162,43 @@ void HTTPClient::handleInput(const char *data, size_t length)
             m_input.clear();
             return;
         }
+
+        const HTTPRouter::Route *streamRoute = m_master.router().streamRouteFor(m_request.method(), m_request.urlPath());
+        if (streamRoute) {
+            // Streaming route: the body is handed to the route while it arrives. Until the route accepts the
+            // request the connection is marked "close", because rejecting it leaves the body unread.
+            position += m_request.headBytes();
+            left -= m_request.headBytes();
+            m_requestKeepAlive = m_request.keepAlive();
+            m_request.setKeepAlive(false);
+            m_response.begin(m_request);
+            dispatch();
+            if (!m_upload) {
+                m_input.clear();
+                return;
+            }
+            size_t used = feedUpload(position, left);
+            position += used;
+            left -= used;
+            if (m_upload || !m_request.keepAlive() || !m_response.isCommitted())
+                break;
+            continue;
+        }
+
+        result = m_request.parseBody(position, left, m_master.settings().maxBodyBytes, &m_master.bodyLimitFunction());
+        if (result == HTTPParseResult::Incomplete) {
+            if (m_request.expectsContinue() && !m_continueSent) {
+                m_continueSent = true;
+                sendBuffer("HTTP/1.1 100 Continue\r\n\r\n");
+            }
+            break;
+        }
+        if (result != HTTPParseResult::Completed) {
+            parseError(result);
+            m_input.clear();
+            return;
+        }
+        m_continueSent = false;
         position += m_request.consumedBytes();
         left -= m_request.consumedBytes();
 
@@ -156,6 +216,101 @@ void HTTPClient::handleInput(const char *data, size_t length)
     } else {
         m_input.clear();
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// streaming routes (uploads)
+// ---------------------------------------------------------------------------------------------
+
+void HTTPClient::startUpload(const HTTPRouter::Route &route, std::vector<std::pair<std::string, std::string>> params)
+{
+    const HTTPSettings &settings = m_master.settings();
+    m_request.setParams(std::move(params));
+    const uint64_t limit = route.bodyLimit ? route.bodyLimit : settings.maxUploadBytes;
+    const BodyKind kind = m_request.bodyKind();
+    if (kind == BodyKind::ContentLength && limit != 0 && m_request.contentLength() > limit) {
+        m_response.sendError(413);
+        return;
+    }
+
+    std::unique_ptr<UploadSink> sink = route.stream(*this, m_request, m_response);
+    if (!sink) {
+        if (!m_response.isCommitted())
+            m_response.internalServerError("The upload handler did not accept the request.");
+        return;
+    }
+
+    // accepted: the connection stays usable after the answer
+    m_request.setKeepAlive(m_requestKeepAlive);
+    m_response.setKeepAlive(m_requestKeepAlive);
+
+    HTTPBodyDecoder decoder = kind == BodyKind::Chunked ? HTTPBodyDecoder::chunked()
+                                                        : HTTPBodyDecoder::contentLength(kind == BodyKind::ContentLength ? m_request.contentLength() : 0);
+    m_upload.reset(new UploadSession(std::move(sink), decoder, limit));
+
+    const std::string *idHeader = m_request.headerField("x-upload-id");
+    const std::string *idQuery = m_request.queryField("uploadId");
+    const std::string *id = idQuery ? idQuery : idHeader;
+    if (id)
+        m_upload->progress = m_master.uploadTracker().begin(*id, decoder.totalBytes());
+
+    if (kind == BodyKind::None) {
+        finishUpload();
+        return;
+    }
+    if (m_request.expectsContinue())
+        sendBuffer("HTTP/1.1 100 Continue\r\n\r\n");
+}
+
+// Returns the number of input bytes that belonged to the body; the rest is the next pipelined request.
+size_t HTTPClient::feedUpload(const char *data, size_t length)
+{
+    UploadSession &session = *m_upload;
+    bool rejected = false;
+    HTTPBodyDecoder::Result result = session.decoder.feed(data, length, session.limit, [&](const char *piece, size_t size) {
+        if (session.sink->onBody(piece, size))
+            return true;
+        rejected = true;
+        return false;
+    });
+    if (session.progress)
+        session.progress->received = session.decoder.decodedBytes();
+
+    switch (result.status) {
+    case HTTPBodyDecoder::Status::NeedMore:
+        return length;
+    case HTTPBodyDecoder::Status::Done:
+        finishUpload();
+        return result.consumed;
+    case HTTPBodyDecoder::Status::TooLarge:
+        abortUpload(413, "Payload Too Large");
+        return length;
+    case HTTPBodyDecoder::Status::Error:
+        abortUpload(rejected ? 400 : 400, rejected ? "The upload was rejected." : "Malformed chunked body.");
+        return length;
+    }
+    return length;
+}
+
+void HTTPClient::finishUpload()
+{
+    std::unique_ptr<UploadSession> session = std::move(m_upload);
+    if (session->progress)
+        session->progress->state = UploadProgress::Done;
+    session->sink->onEnd(*this, m_request, m_response);
+    if (!m_response.isCommitted())
+        m_response.internalServerError("The upload handler did not produce a response.");
+}
+
+void HTTPClient::abortUpload(int status, const char *message)
+{
+    std::unique_ptr<UploadSession> session = std::move(m_upload);
+    if (session->progress)
+        session->progress->state = UploadProgress::Failed;
+    m_response.forceClose();
+    session->sink->onAbort(&m_response);
+    if (!m_response.isCommitted())
+        m_response.sendError(status, message);
 }
 
 void HTTPClient::parseError(HTTPParseResult result)
@@ -185,6 +340,17 @@ void HTTPClient::dispatch()
         m_response.siteNotFound();
         return;
     }
+
+    // default response hardening (can be switched off in settings.ini)
+    if (settings.securityHeaders) {
+        m_response.setHeaderField("X-Content-Type-Options", "nosniff");
+        m_response.setHeaderField("X-Frame-Options", "SAMEORIGIN");
+        m_response.setHeaderField("Referrer-Policy", "same-origin");
+    }
+    if (!settings.contentSecurityPolicy.empty())
+        m_response.setHeaderField("Content-Security-Policy", settings.contentSecurityPolicy);
+    if (m_tls && settings.hstsSeconds > 0)
+        m_response.setHeaderField("Strict-Transport-Security", "max-age=" + std::to_string(settings.hstsSeconds));
 
     // 2. per-IP request rate
     if (m_limited || m_master.limiter().isEnabled()) {
@@ -252,6 +418,10 @@ void HTTPClient::dispatch()
         case HTTPRouter::Result::Found:
             if (route->webSocket) {
                 handleWebSocketUpgrade(route->webSocket);
+                return;
+            }
+            if (route->stream) {
+                startUpload(*route, std::move(params));
                 return;
             }
             m_request.setParams(std::move(params));

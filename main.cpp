@@ -5,6 +5,8 @@
 #include "clsWEBMaster.h"
 #include "LinuxService/clsLinuxService.h"
 #include "Utils/clsRizLog.h"
+#include "Utils/clsFileUtils.h"
+#include "Utils/clsEscape.h"
 #include "Utils/clsStringUtils.h"
 #include <atomic>
 #include <chrono>
@@ -46,9 +48,8 @@ int main(int argc, char **argv)
         server.compressionTypes().add(extension);
 
     // Middleware: runs before routing; return true when it answered the request itself.
-    server.use([](HTTPClient &, HTTPRequest &request, HTTPResponse &response) {
-        response.setHeaderField("X-Content-Type-Options", "nosniff");
-        (void)request;
+    server.use([](HTTPClient &, HTTPRequest &, HTTPResponse &response) {
+        response.setHeaderField("X-Served-By", "rizweb");
         return false;
     });
 
@@ -63,7 +64,7 @@ int main(int argc, char **argv)
     });
     server.get("/api/hello/:name", [](HTTPClient &, HTTPRequest &request, HTTPResponse &response) {
         response.setContentType("application/json; charset=utf-8");
-        response.write("{\"hello\":\"" + StringUtils::htmlEscape(request.param("name")) + "\"}");
+        response.write("{\"hello\":\"" + Escape::json(request.param("name")) + "\"}");
         response.flush(200);
     });
     server.post("/api/echo", [](HTTPClient &, HTTPRequest &request, HTTPResponse &response) {
@@ -71,6 +72,26 @@ int main(int argc, char **argv)
         response.write(request.body());
         response.flush(200);
     }).bodyLimit = 8 * 1024 * 1024;     // per-route body limit
+
+    // File upload: multipart/form-data goes straight to ./upload while it arrives (nothing is buffered in memory).
+    //   curl -F "file=@photo.png" -F "title=hello" "http://host:8080/upload?uploadId=abc"
+    //   curl http://host:8080/upload/progress/abc        (JSON progress while the upload runs)
+    UploadOptions uploadOptions;
+    uploadOptions.directory = FileUtils::executableDirectory() + "/upload";
+    uploadOptions.maxFileBytes = 512ull * 1024 * 1024;
+    server.upload("/upload", uploadOptions, [](HTTPClient &, HTTPRequest &, HTTPResponse &response, UploadResult &result) {
+        std::string json = "{\"files\":[";
+        for (size_t i = 0; i < result.files.size(); i++) {
+            const UploadedFile &file = result.files[i];
+            json += std::string(i ? "," : "") + "{\"field\":\"" + Escape::json(file.fieldName) + "\",\"name\":\"" + Escape::json(file.fileName) +
+                    "\",\"type\":\"" + Escape::json(file.contentType) + "\",\"size\":" + std::to_string(file.size) + "}";
+        }
+        json += "],\"fields\":" + std::to_string(result.fields.size()) + "}";
+        response.setContentType("application/json; charset=utf-8");
+        response.write(json);
+        response.flush(200);
+    });
+    server.uploadProgress();
 
     // WebSocket endpoints: any number, each with its own callbacks.
     WebSocketEndpoint echo;

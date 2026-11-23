@@ -3,6 +3,7 @@
 #include "clsHTTPHeaderfields.h"
 #include <cstddef>
 #include <string>
+#include <cstdint>
 #include <functional>
 #include <string_view>
 #include <utility>
@@ -34,6 +35,9 @@ enum class HTTPParseResult
     VersionNotSupported // 505
 };
 
+// How the request body is framed.
+enum class BodyKind { None, ContentLength, Chunked };
+
 // Per-request body limit: called once the headers are parsed (method, decoded path) and the request has a body.
 using BodyLimitFunction = std::function<size_t(HTTPMethod, const std::string &urlPath)>;
 
@@ -47,6 +51,17 @@ public:
     // Transfer-Encoding: chunked are supported. |limitFor| (optional) overrides maxBodyBytes per path.
     HTTPParseResult parse(const char *data, size_t length, size_t maxBodyBytes, const BodyLimitFunction *limitFor = nullptr);
     size_t consumedBytes() const { return m_consumed; }
+
+    // parse() = parseHead() + parseBody(). The split lets streaming routes read the body themselves:
+    // parseHead() stops after the blank line (Completed = head parsed, body not looked at);
+    // parseBody() takes the same buffer and returns Completed / Incomplete / BodyTooLarge / BadRequest.
+    HTTPParseResult parseHead(const char *data, size_t length);
+    HTTPParseResult parseBody(const char *data, size_t length, size_t maxBodyBytes, const BodyLimitFunction *limitFor = nullptr);
+    size_t headBytes() const { return m_headBytes; }              // request line + headers + blank line
+    BodyKind bodyKind() const { return m_bodyKind; }
+    uint64_t contentLength() const { return m_contentLength; }    // BodyKind::ContentLength only
+    bool expectsContinue() const;                                 // "Expect: 100-continue"
+    void setKeepAlive(bool keepAlive) { m_keepAlive = keepAlive; }
 
     HTTPMethod method() const { return m_method; }
     const std::string &methodName() const { return m_methodName; }
@@ -87,6 +102,9 @@ private:
     bool m_http11 = true;
     bool m_keepAlive = true;
     size_t m_consumed = 0;
+    size_t m_headBytes = 0;
+    BodyKind m_bodyKind = BodyKind::None;
+    uint64_t m_contentLength = 0;
 
     static bool normalizePath(std::string_view rawPath, std::string &out);
     void parseUrlEncodedFields(std::string_view text);

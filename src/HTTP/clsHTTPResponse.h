@@ -33,6 +33,8 @@ public:
     void write(std::string_view data) { m_body.append(data); }
     void write(const std::string &data) { m_body.append(data); }
     void write(const char *data) { m_body.append(data); }
+    // Appends untrusted text as HTML text (escaped). Use for user supplied values inside markup you write yourself.
+    void writeEscaped(std::string_view untrusted);
     void write(long long number) { m_body.append(std::to_string(number)); }
 
     // sending
@@ -59,6 +61,7 @@ public:
     bool isHeadRequest() const { return m_head; }
     bool keepAlive() const { return m_keepAlive; }
     void forceClose() { m_keepAlive = false; }
+    void setKeepAlive(bool keepAlive) { m_keepAlive = keepAlive; }
 
 private:
     void buildHead(std::string &out, int statusCode, bool hasLength, uint64_t length);

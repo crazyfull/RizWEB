@@ -6,7 +6,9 @@
 #include "HTTP/clsHTTPCors.h"
 #include "HTTP/clsHTTPLimiter.h"
 #include "HTTP/clsHTTPRequest.h"
+#include "HTTP/clsHTTPMultipartUpload.h"
 #include "HTTP/clsHTTPRouter.h"
+#include "HTTP/clsHTTPUploadTracker.h"
 #include "HTTP/clsHTTPResponse.h"
 #include "HTTP/clsHTTPSecurity.h"
 #include "HTTP/clsHTTPStaticFiles.h"
@@ -69,6 +71,15 @@ public:
     HTTPRouter::Route &patch(const std::string &pattern, RouteHandler handler) { return m_router.add(HTTPMethod::Patch, pattern, std::move(handler)); }
     HTTPRouter::Route &del(const std::string &pattern, RouteHandler handler) { return m_router.add(HTTPMethod::Delete, pattern, std::move(handler)); }
     HTTPRouter::Route &ws(const std::string &pattern, WebSocketEndpoint endpoint) { return m_router.addWebSocket(pattern, std::move(endpoint)); }
+    // Streaming routes: the request body is NOT buffered. |factory| runs when the headers are in (after
+    // authentication, CORS, limits and middleware) and returns an UploadSink that receives the body as it arrives.
+    HTTPRouter::Route &stream(HTTPMethod method, const std::string &pattern, UploadFactory factory) { return m_router.addStream(method, pattern, std::move(factory)); }
+    // multipart/form-data upload straight to disk (POST): files are written to options.directory while they arrive,
+    // |handler| runs when everything is in. Limit: route.bodyLimit or settings().maxUploadBytes.
+    HTTPRouter::Route &upload(const std::string &pattern, UploadOptions options, UploadHandler handler);
+    // GET <pattern> (contains ":id"): JSON progress of an upload that was sent with ?uploadId=<id> or an X-Upload-Id header.
+    HTTPRouter::Route &uploadProgress(const std::string &pattern = "/upload/progress/:id");
+    UploadTracker &uploadTracker() { return m_uploadTracker; }
     void use(Middleware middleware) { m_middleware.push_back(std::move(middleware)); }
     const std::vector<Middleware> &middleware() const { return m_middleware; }
     const BodyLimitFunction &bodyLimitFunction() const { return m_bodyLimit; }
@@ -107,6 +118,7 @@ private:
     CompressionTypeList m_compressionTypes;
     HTTPClientList m_clients;
     HTTPStaticFiles m_staticFiles;
+    UploadTracker m_uploadTracker;
     HTTPRouter m_router;
     HTTPCors m_cors;
     HTTPLimiter m_limiter;

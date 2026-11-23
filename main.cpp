@@ -2,6 +2,8 @@
 //   rizweb                 run with settings.ini (created next to the executable on first start)
 //   rizweb -install        install + start a systemd service (Linux, root)
 //   rizweb -uninstall      stop + remove the systemd service
+//   rizweb -fetch URL      HTTP(S) client: print the status line, headers and body of URL (-k: do not verify TLS)
+#include "Client/clsHTTPFetcher.h"
 #include "clsWEBMaster.h"
 #include "LinuxService/clsLinuxService.h"
 #include "Utils/clsRizLog.h"
@@ -27,7 +29,23 @@ int main(int argc, char **argv)
             return LinuxService::createService(serviceName, "RizWEB Server") ? 0 : 1;
         if (!strcmp(argv[1], "-uninstall"))
             return LinuxService::removeService(serviceName) ? 0 : 1;
-        printf("usage: %s [-install | -uninstall]\n", argv[0]);
+        if (!strcmp(argv[1], "-fetch") && argc > 2) {
+            HTTPFetcher fetcher;
+            HTTPFetchRequest request;
+            request.url = argv[2];
+            request.verifyTLS = !(argc > 3 && !strcmp(argv[3], "-k"));
+            HTTPFetchResponse response = fetcher.fetch(request);
+            if (!response.completed()) {
+                fprintf(stderr, "error: %s\n", response.error.c_str());
+                return 1;
+            }
+            printf("HTTP %d %s  (%s, %d redirect(s))\n", response.status, response.reason.c_str(), response.finalUrl.c_str(), response.redirects);
+            for (const auto &header : response.headers)
+                printf("%s: %s\n", header.first.c_str(), header.second.c_str());
+            printf("\n%s\n", response.body.c_str());
+            return response.ok() ? 0 : 2;
+        }
+        printf("usage: %s [-install | -uninstall | -fetch URL [-k]]\n", argv[0]);
         return strcmp(argv[1], "-h") == 0 ? 0 : 1;
     }
 

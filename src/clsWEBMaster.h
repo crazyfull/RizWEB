@@ -21,7 +21,7 @@
 #include <memory>
 #include <thread>
 
-#define RIZWEB_VERSION "1.4.0"
+#include "clsVersion.h"
 
 namespace rizweb {
 

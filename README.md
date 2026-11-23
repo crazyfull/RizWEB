@@ -86,7 +86,7 @@ and use `web.clients().post(id, fn)` to talk to a client from another thread.
 
 ## Limits and hardening
 
-`settings.ini`: `MaxBodyBytes`, `MaxConnectionsPerIp` (extra connections are closed), `MaxRequestsPerSecondPerIp`
+`settings.ini`: `FileCacheSeconds` (static file cache), `MaxBodyBytes`, `MaxConnectionsPerIp` (extra connections are closed), `MaxRequestsPerSecondPerIp`
 (`429` + `Retry-After`); 0 disables a limit. Smuggling (`Content-Length` + `Transfer-Encoding`) and unsupported
 transfer codings are rejected.
 
@@ -111,10 +111,41 @@ machine (so the load generator takes CPU from both), localhost, plain HTTP, ngin
 | 1 MB | 64 | 5.3k | 5.6k | 14.6 ms | 17.4 ms |
 | 1 MB | 512 | 4.9k | 7.1k | 123.9 ms | 127.5 ms |
 
-Large files are on par (both bound by sendfile / loopback). Small files are 1.7-3x slower than nginx: each request
-still does `realpath` (7 `readlink` calls), `open`/`fstat`/`read`/`close` and three `lseek`s, where nginx serves them from
-its open-file cache. A path/metadata cache and in-memory small-file cache are the next optimisation.
-Idle memory: RizWEB 6 MB RSS vs nginx 12 MB (2 workers); stripped static binary 5.4 MB including BoringSSL.
+Large files are on par (both bound by sendfile / loopback).
+
+**Small-file path.** The first run showed RizWEB 1.7-3x slower on the 554 B file: every request did `realpath`
+(7 `readlink` calls), `open`/`fstat`/`read`/`close` and three `lseek`s. Resolved files (real path, size, mtime,
+ETag, content type and, for files up to 64 KB, the content) are now cached for `FileCacheSeconds` (default 1 s, 0 = off);
+a changed file is picked up within that time, hidden files / symlink escapes are still refused. Re-measured, 554 B file:
+215k req/s at 64 connections and 224k at 512 (before: 72k / 92k; nginx: 225k / 162k).
+
+### 10k+ concurrent connections
+
+`tools/benchHighConnections.sh` (wrk, keep-alive, 554 B file, 12 s per run, same VM, nginx `worker_connections 16384`,
+one run each; sandbox limit of 20000 open files per process):
+
+| connections | server | total requests | req/s | p99 | RSS |
+|---|---|---|---|---|---|
+| 1,000 | RizWEB | 2.92 M | 241.9k | 8.5 ms | 6 MB |
+| 1,000 | nginx | 2.32 M | 191.8k | 10.7 ms | 21 MB |
+| 10,000 | RizWEB | 1.94 M | 159.9k | 71 ms | 23 MB |
+| 10,000 | nginx | 1.68 M | 139.4k | 84 ms | 26 MB |
+| 15,000 | RizWEB | 1.65 M | 136.1k | 125 ms | 32 MB |
+| 15,000 | nginx | 1.52 M | 125.1k | 125 ms | 28 MB |
+| 19,000 (2 wrk) | RizWEB | 1.44 M | 119.1k | 179 ms | 39 MB |
+| 19,000 (2 wrk) | nginx | 1.28 M | 105.7k | 184 ms | (111 MB*) |
+
+\* nginx RSS at that point includes memory retained from the earlier runs of the same process.
+No connect/read/timeout errors in these runs. One connection per request (`Connection: close`, 1,000 clients):
+RizWEB 200k req/s (p99 9.9 ms), nginx 172k req/s (p99 24 ms). 100 KB file: 6,000 connections 53.4k vs 57.1k req/s,
+9,000 connections 45.4k vs 47.5k req/s (RizWEB / nginx), no errors.
+
+Limits found while testing: every connection and every file being sent needs a descriptor, so 10,000 simultaneous
+downloads of a file above 64 KB need ~20,000 descriptors. With the sandbox hard limit of 20000, RizWEB logged
+`accept4: too many open files` and ~420 connections were reset at 10,000 large-file connections (nginx shares open
+descriptors between requests and did not). RizWEB now raises its soft open-file limit to the hard limit at start-up;
+sharing descriptors between streams of one file is not implemented. Not measured: TLS under load, connections from many
+client IPs, machines with more than 2 cores.
 
 ## Docker
 

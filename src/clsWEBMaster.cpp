@@ -1,7 +1,24 @@
 #include "clsWEBMaster.h"
 #include "Utils/clsRizLog.h"
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
 
 namespace rizweb {
+
+// Every connection (and every file being sent) needs a descriptor: lift the soft limit to the hard limit.
+static void raiseFileDescriptorLimit()
+{
+#if !defined(_WIN32)
+    struct rlimit limit;
+    if (getrlimit(RLIMIT_NOFILE, &limit) != 0 || limit.rlim_cur >= limit.rlim_max)
+        return;
+    rlim_t previous = limit.rlim_cur;
+    limit.rlim_cur = limit.rlim_max;
+    if (setrlimit(RLIMIT_NOFILE, &limit) == 0)
+        RIZLOG_INFO("open file limit raised from %llu to %llu", static_cast<unsigned long long>(previous), static_cast<unsigned long long>(limit.rlim_cur));
+#endif
+}
 
 WEBMaster::WEBMaster(int maxConnections, int shards)
     : m_staticFiles(*this), m_host(nullptr), m_ownsHost(true)
@@ -84,6 +101,7 @@ bool WEBMaster::start()
 {
     if (m_running)
         return true;
+    raiseFileDescriptorLimit();
     if (m_settings.httpPort == 0 && m_settings.sslPort == 0) {
         RIZLOG_ERROR("no listener configured");
         return false;

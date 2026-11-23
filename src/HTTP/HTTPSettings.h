@@ -40,6 +40,7 @@ public:
     size_t maxWebSocketMessageBytes = 1024 * 1024;
     uint32_t maxConnectionsPerIp = 0;           // 0 = unlimited
     uint32_t maxRequestsPerSecondPerIp = 0;     // 0 = unlimited
+    uint32_t fileCacheSeconds = 1;              // how long resolved static files are trusted (0 = always hit the disk)
     bool webSocketSameOriginOnly = true;
     std::string webSocketPath = "/ws";
 };

@@ -39,6 +39,7 @@ bool HTTPSettings::load(const std::string &path)
     maxWebSocketMessageBytes = static_cast<size_t>(ini.getLong(kServer, "MaxWebSocketMessageBytes", static_cast<long>(maxWebSocketMessageBytes)));
     maxConnectionsPerIp = static_cast<uint32_t>(ini.getLong(kServer, "MaxConnectionsPerIp", maxConnectionsPerIp));
     maxRequestsPerSecondPerIp = static_cast<uint32_t>(ini.getLong(kServer, "MaxRequestsPerSecondPerIp", maxRequestsPerSecondPerIp));
+    fileCacheSeconds = static_cast<uint32_t>(ini.getLong(kServer, "FileCacheSeconds", fileCacheSeconds));
     webSocketSameOriginOnly = ini.getBool(kServer, "WebSocketSameOriginOnly", webSocketSameOriginOnly);
     webSocketPath = ini.getString(kServer, "WebSocketPath", webSocketPath);
 
@@ -76,6 +77,7 @@ bool HTTPSettings::save(const std::string &path) const
     ini.setLong(kServer, "MaxWebSocketMessageBytes", static_cast<long>(maxWebSocketMessageBytes));
     ini.setLong(kServer, "MaxConnectionsPerIp", maxConnectionsPerIp);
     ini.setLong(kServer, "MaxRequestsPerSecondPerIp", maxRequestsPerSecondPerIp);
+    ini.setLong(kServer, "FileCacheSeconds", fileCacheSeconds);
     ini.setBool(kServer, "WebSocketSameOriginOnly", webSocketSameOriginOnly);
     ini.setString(kServer, "WebSocketPath", webSocketPath);
     ini.setString(kSsl, "SSLCertPath", sslCertPath);

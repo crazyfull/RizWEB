@@ -63,6 +63,13 @@ void HTTPStaticFiles::serve(HTTPClient &client, HTTPRequest &request, HTTPRespon
         return;
     }
 
+    m_fileCache.setTtlSeconds(m_master.settings().fileCacheSeconds);
+    if (FileCache::EntryPtr cached = m_fileCache.find(root, relativeUrlPath)) {
+        request.setFilePath(cached->path);
+        serveFile(client, request, response, *cached);
+        return;
+    }
+
     std::string path = resolve(root, relativeUrlPath);
     if (path.empty()) {
         response.notFound();
@@ -88,7 +95,9 @@ void HTTPStaticFiles::serve(HTTPClient &client, HTTPRequest &request, HTTPRespon
             std::string candidate = path + "/" + index;
             FileInfo indexInfo = FileUtils::stat(candidate);
             if (indexInfo.exists && !indexInfo.isDirectory) {
-                serveFile(client, request, response, candidate, indexInfo.size, indexInfo.modified);
+                FileCache::EntryPtr entry = buildEntry(candidate, indexInfo.size, indexInfo.modified);
+                m_fileCache.put(root, relativeUrlPath, entry);
+                serveFile(client, request, response, *entry);
                 return;
             }
         }
@@ -100,7 +109,30 @@ void HTTPStaticFiles::serve(HTTPClient &client, HTTPRequest &request, HTTPRespon
         return;
     }
 
-    serveFile(client, request, response, path, info.size, info.modified);
+    FileCache::EntryPtr entry = buildEntry(path, info.size, info.modified);
+    m_fileCache.put(root, relativeUrlPath, entry);
+    serveFile(client, request, response, *entry);
+}
+
+FileCache::EntryPtr HTTPStaticFiles::buildEntry(const std::string &path, unsigned long long size, time_t modified)
+{
+    auto entry = std::make_shared<FileCache::Entry>();
+    entry->path = path;
+    entry->size = size;
+    entry->modified = modified;
+    char etagBuffer[64];
+    snprintf(etagBuffer, sizeof(etagBuffer), "W/\"%llx-%llx\"", size, static_cast<unsigned long long>(modified));
+    entry->etag = etagBuffer;
+    entry->lastModified = FileUtils::formatHttpDate(modified);
+    entry->contentType = m_master.mimeTypes().typeForPath(path);
+    if (const std::string *cache = m_master.cacheFileTypes().cacheControlFor(path))
+        entry->cacheControl = *cache;
+    if (size <= kSmallFile) {
+        std::string content;
+        if (FileUtils::readFile(path, content, kSmallFile))
+            entry->content = std::make_shared<const std::string>(std::move(content));
+    }
+    return entry;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -137,19 +169,20 @@ static bool parseRange(const std::string &header, unsigned long long size, unsig
     return true;
 }
 
-void HTTPStaticFiles::serveFile(HTTPClient &client, HTTPRequest &request, HTTPResponse &response, const std::string &path, unsigned long long size, time_t modified)
+void HTTPStaticFiles::serveFile(HTTPClient &client, HTTPRequest &request, HTTPResponse &response, const FileCache::Entry &entry)
 {
-    char etagBuffer[64];
-    snprintf(etagBuffer, sizeof(etagBuffer), "W/\"%llx-%llx\"", size, static_cast<unsigned long long>(modified));
-    const std::string etag = etagBuffer;
-    const std::string lastModified = FileUtils::formatHttpDate(modified);
+    const std::string &path = entry.path;
+    const unsigned long long size = entry.size;
+    const time_t modified = entry.modified;
+    const std::string &etag = entry.etag;
+    const std::string &lastModified = entry.lastModified;
 
-    response.setHeaderField("Content-Type", m_master.mimeTypes().typeForPath(path));
+    response.setHeaderField("Content-Type", entry.contentType);
     response.setHeaderField("ETag", etag);
     response.setHeaderField("Last-Modified", lastModified);
     response.setHeaderField("Accept-Ranges", "bytes");
-    if (const std::string *cache = m_master.cacheFileTypes().cacheControlFor(path))
-        response.setHeaderField("Cache-Control", *cache);
+    if (!entry.cacheControl.empty())
+        response.setHeaderField("Cache-Control", entry.cacheControl);
 
     // conditional requests
     const std::string *ifNoneMatch = request.headerField("if-none-match");
@@ -223,12 +256,11 @@ void HTTPStaticFiles::serveFile(HTTPClient &client, HTTPRequest &request, HTTPRe
     }
 
     if (size <= kSmallFile) {
-        std::string content;
-        if (!FileUtils::readFile(path, content, kSmallFile)) {
+        if (!entry.content) {
             response.internalServerError("The file cannot be read.");
             return;
         }
-        response.write(content);
+        response.write(*entry.content);
         response.flush(200);
         return;
     }

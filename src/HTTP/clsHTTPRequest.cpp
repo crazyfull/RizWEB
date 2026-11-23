@@ -92,7 +92,64 @@ void HTTPRequest::parseUrlEncodedFields(std::string_view text)
     }
 }
 
-HTTPParseResult HTTPRequest::parse(const char *data, size_t length, size_t maxBodyBytes)
+std::string HTTPRequest::param(std::string_view name) const
+{
+    for (const auto &item : m_params)
+        if (item.first == name)
+            return item.second;
+    return {};
+}
+
+// Chunked body: size-line CRLF data CRLF ... 0 CRLF [trailers] CRLF. Trailers are skipped.
+int HTTPRequest::decodeChunked(const char *data, size_t length, size_t limit, std::string &body, size_t &used)
+{
+    size_t position = 0;
+    body.clear();
+    while (true) {
+        size_t lineEnd = std::string_view(data + position, length - position).find("\r\n");
+        if (lineEnd == std::string_view::npos)
+            return (length - position > 80) ? -1 : 0;
+        std::string_view line(data + position, lineEnd);
+        size_t extension = line.find(';');
+        if (extension != std::string_view::npos)
+            line = line.substr(0, extension);
+        line = StringUtils::trim(line);
+        if (line.empty() || line.size() > 8)
+            return -1;
+        size_t chunk = 0;
+        for (char c : line) {
+            int digit = (c >= '0' && c <= '9') ? c - '0' : (c >= 'a' && c <= 'f') ? c - 'a' + 10 : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+            if (digit < 0)
+                return -1;
+            chunk = chunk * 16 + static_cast<size_t>(digit);
+        }
+        position += lineEnd + 2;
+        if (chunk == 0) {
+            // trailer section ends with an empty line
+            while (true) {
+                size_t end = std::string_view(data + position, length - position).find("\r\n");
+                if (end == std::string_view::npos)
+                    return (length - position > 8192) ? -1 : 0;
+                position += end + 2;
+                if (end == 0) {
+                    used = position;
+                    return 1;
+                }
+            }
+        }
+        if (body.size() + chunk > limit)
+            return -2;
+        if (length - position < chunk + 2)
+            return 0;
+        body.append(data + position, chunk);
+        position += chunk;
+        if (data[position] != '\r' || data[position + 1] != '\n')
+            return -1;
+        position += 2;
+    }
+}
+
+HTTPParseResult HTTPRequest::parse(const char *data, size_t length, size_t maxBodyBytes, const BodyLimitFunction *limitFor)
 {
     std::string_view input(data, length);
     size_t headerEnd = input.find("\r\n\r\n");
@@ -192,28 +249,46 @@ HTTPParseResult HTTPRequest::parse(const char *data, size_t length, size_t maxBo
     else
         m_keepAlive = connection && StringUtils::containsIgnoreCase(*connection, "keep-alive");
 
-    // body (Content-Length only; chunked uploads are refused instead of mis-parsed)
-    size_t bodyLength = 0;
+    // body: Content-Length or chunked (both together is a smuggling attempt)
+    size_t limit = maxBodyBytes;
     const std::string *contentLength = m_headers.fieldByName("content-length");
-    if (m_headers.fieldByName("transfer-encoding"))
-        return contentLength ? HTTPParseResult::BadRequest : HTTPParseResult::NotImplemented;
-    if (contentLength) {
-        if (contentLength->empty() || contentLength->size() > 12)
-            return HTTPParseResult::BadRequest;
-        for (char c : *contentLength)
-            if (c < '0' || c > '9')
-                return HTTPParseResult::BadRequest;
-        bodyLength = static_cast<size_t>(strtoull(contentLength->c_str(), nullptr, 10));
-        if (bodyLength > maxBodyBytes)
-            return HTTPParseResult::BodyTooLarge;
-    }
-
+    const std::string *transferEncoding = m_headers.fieldByName("transfer-encoding");
     size_t bodyStart = headerEnd + 4;
-    if (length - bodyStart < bodyLength)
-        return HTTPParseResult::Incomplete;
+    size_t bodyLength = 0;
 
-    m_body.assign(data + bodyStart, bodyLength);
-    m_consumed = bodyStart + bodyLength;
+    if (transferEncoding) {
+        if (contentLength || !StringUtils::equalsIgnoreCase(StringUtils::trim(*transferEncoding), "chunked"))
+            return contentLength ? HTTPParseResult::BadRequest : HTTPParseResult::NotImplemented;
+        if (limitFor && *limitFor)
+            limit = (*limitFor)(m_method, m_urlPath);
+        size_t used = 0;
+        int state = decodeChunked(data + bodyStart, length - bodyStart, limit, m_body, used);
+        if (state == 0)
+            return HTTPParseResult::Incomplete;
+        if (state == -2)
+            return HTTPParseResult::BodyTooLarge;
+        if (state < 0)
+            return HTTPParseResult::BadRequest;
+        m_consumed = bodyStart + used;
+        bodyLength = m_body.size();
+    } else {
+        if (contentLength) {
+            if (contentLength->empty() || contentLength->size() > 12)
+                return HTTPParseResult::BadRequest;
+            for (char c : *contentLength)
+                if (c < '0' || c > '9')
+                    return HTTPParseResult::BadRequest;
+            bodyLength = static_cast<size_t>(strtoull(contentLength->c_str(), nullptr, 10));
+            if (bodyLength > 0 && limitFor && *limitFor)
+                limit = (*limitFor)(m_method, m_urlPath);
+            if (bodyLength > limit)
+                return HTTPParseResult::BodyTooLarge;
+        }
+        if (length - bodyStart < bodyLength)
+            return HTTPParseResult::Incomplete;
+        m_body.assign(data + bodyStart, bodyLength);
+        m_consumed = bodyStart + bodyLength;
+    }
 
     const std::string *contentType = m_headers.fieldByName("content-type");
     if (bodyLength > 0 && contentType && StringUtils::startsWith(StringUtils::toLower(*contentType), "application/x-www-form-urlencoded"))

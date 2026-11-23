@@ -44,14 +44,6 @@ HTTPClient::~HTTPClient()
     }
 }
 
-std::string HTTPClient::clientIp() const
-{
-    std::string ip;
-    uint16_t port = 0;
-    getPeerAddress(ip, port);
-    return ip;
-}
-
 void HTTPClient::setIdleTimeoutEnabled(bool enabled)
 {
     setIdleTimeout(enabled ? m_master.settings().keepAliveSeconds : 0);
@@ -63,6 +55,15 @@ void HTTPClient::setIdleTimeoutEnabled(bool enabled)
 
 void HTTPClient::onAccepted()
 {
+    uint16_t port = 0;
+    getPeerAddress(m_ip, port);
+    if (m_master.limiter().isEnabled()) {
+        if (!m_master.limiter().acquireConnection(m_ip)) {
+            close(true);                    // too many connections from this address
+            return;
+        }
+        m_limited = true;
+    }
     setIdleTimeout(m_master.settings().keepAliveSeconds);
     m_master.clients().add(this);
     m_registered = true;
@@ -70,13 +71,20 @@ void HTTPClient::onAccepted()
 
 void HTTPClient::onClose()
 {
+    if (m_limited) {
+        m_master.limiter().releaseConnection(m_ip);
+        m_limited = false;
+    }
     if (m_registered) {
         m_master.clients().remove(this);
         m_registered = false;
     }
-    if (m_webSocket)
-        m_master.notifyWebSocketClosed(*this);
-    else
+    if (m_webSocket) {
+        if (m_endpoint && m_endpoint->onClose)
+            m_endpoint->onClose(*this);
+        else if (!m_endpoint)
+            m_master.notifyWebSocketClosed(*this);
+    } else
         m_master.notifyHttpClosed(*this);
     sweepRetiredFiles(true);
 }
@@ -123,7 +131,7 @@ void HTTPClient::handleInput(const char *data, size_t length)
 
     while (left > 0 && !m_busy && !m_webSocket && getStatus() == Connected) {
         m_request = HTTPRequest();
-        HTTPParseResult result = m_request.parse(position, left, m_master.settings().maxBodyBytes);
+        HTTPParseResult result = m_request.parse(position, left, m_master.settings().maxBodyBytes, &m_master.bodyLimitFunction());
         if (result == HTTPParseResult::Incomplete)
             break;
         if (result != HTTPParseResult::Completed) {
@@ -172,30 +180,42 @@ void HTTPClient::dispatch()
     const HTTPSettings &settings = m_master.settings();
     HTTPSecurity &security = m_master.security();
 
-    // Host filtering
+    // 1. Host filtering
     if (!settings.serverHostName.empty() && m_request.host() != StringUtils::toLower(settings.serverHostName)) {
         m_response.siteNotFound();
         return;
     }
 
-    // WebSocket endpoint
-    if (path == settings.webSocketPath) {
-        handleWebSocketUpgrade();
-        return;
+    // 2. per-IP request rate
+    if (m_limited || m_master.limiter().isEnabled()) {
+        uint32_t retryAfter = 1;
+        if (!m_master.limiter().allowRequest(m_ip, retryAfter)) {
+            m_response.setHeaderField("Retry-After", std::to_string(retryAfter));
+            m_response.sendError(429, "Too many requests.");
+            return;
+        }
     }
 
+    // 3. CORS (answers preflight requests itself)
+    if (m_master.cors().isEnabled() && m_master.cors().apply(m_request, m_response))
+        return;
+
+    // 4. built-in areas and login protection
     std::string root = settings.locatedRoot;
     std::string relative = path;
+    bool staticOnly = false;
 
     if (StringUtils::startsWith(path, "/resource/") || path == "/resource") {
         root = settings.resourceRoot;
         relative = path.size() > 9 ? path.substr(9) : "/";
+        staticOnly = true;
     } else if (path == "/auth") {
         m_response.redirect("/auth/", 301);
         return;
     } else if (StringUtils::startsWith(path, "/auth/")) {
         root = settings.authRoot;
         relative = path.substr(5);
+        staticOnly = true;
         if (m_request.method() == HTTPMethod::Post) {
             handleLogin();
             return;
@@ -209,14 +229,57 @@ void HTTPClient::dispatch()
         m_response.setCookie(HTTPSecurity::kNonceCookie, nonce, options);
     } else if (security.isAuthenticationEnabled() && security.isSecurePath(path)) {
         if (!security.isSessionValid(m_request.headerField("cookie"))) {
-            m_response.redirect("/auth/", 302);
+            if (m_request.headerField("upgrade"))
+                m_response.authenticationFailed();
+            else
+                m_response.redirect("/auth/", 302);
             return;
         }
     }
 
+    // 5. middleware chain
+    for (const WEBMaster::Middleware &middleware : m_master.middleware()) {
+        if (middleware(*this, m_request, m_response) || m_response.isCommitted())
+            return;
+    }
+
+    // 6. routes
+    if (!staticOnly && !m_master.router().isEmpty()) {
+        const HTTPRouter::Route *route = nullptr;
+        std::vector<std::pair<std::string, std::string>> params;
+        std::string allow;
+        switch (m_master.router().match(m_request.method(), path, route, params, allow)) {
+        case HTTPRouter::Result::Found:
+            if (route->webSocket) {
+                handleWebSocketUpgrade(route->webSocket);
+                return;
+            }
+            m_request.setParams(std::move(params));
+            route->handler(*this, m_request, m_response);
+            if (!m_response.isCommitted())
+                m_response.internalServerError("The handler did not produce a response.");
+            return;
+        case HTTPRouter::Result::MethodNotAllowed:
+            // a static file may still live at this path; only refuse when there is none
+            if (m_request.method() != HTTPMethod::Get && m_request.method() != HTTPMethod::Head) {
+                m_response.methodNotAllowed(allow);
+                return;
+            }
+            break;
+        case HTTPRouter::Result::NotFound:
+            break;
+        }
+    }
+
+    // 7. legacy single WebSocket path and catch-all handler
+    if (path == settings.webSocketPath && !staticOnly) {
+        handleWebSocketUpgrade(nullptr);
+        return;
+    }
     if (m_master.notifyHttpRequest(*this, m_request, m_response) || m_response.isCommitted())
         return;
 
+    // 8. files
     m_master.staticFiles().serve(*this, m_request, m_response, root, relative);
 }
 
@@ -254,7 +317,7 @@ void HTTPClient::authenticationResponse(bool successful, const std::string &mess
     m_response.flush(200);
 }
 
-void HTTPClient::handleWebSocketUpgrade()
+void HTTPClient::handleWebSocketUpgrade(const std::shared_ptr<const WebSocketEndpoint> &endpoint)
 {
     const std::string *upgrade = m_request.headerField("upgrade");
     const std::string *connection = m_request.headerField("connection");
@@ -287,22 +350,22 @@ void HTTPClient::handleWebSocketUpgrade()
         }
     }
 
-    // the secure path also protects the socket
-    HTTPSecurity &security = m_master.security();
-    if (security.isAuthenticationEnabled() && security.isSecurePath(m_request.urlPath()) && !security.isSessionValid(m_request.headerField("cookie"))) {
-        m_response.authenticationFailed();
-        return;
-    }
-
     m_response.switchProtocol(*key);
     m_webSocket = true;
+    m_endpoint = endpoint;
     setIdleTimeout(0);              // the application decides about pings / timeouts
-    m_master.notifyWebSocketConnected(*this);
+    if (!endpoint)
+        m_master.notifyWebSocketConnected(*this);
+    else if (endpoint->onOpen)
+        endpoint->onOpen(*this);
 }
 
 void HTTPClient::webSocketMessage(bool isBinary, const char *payload, size_t length)
 {
-    m_master.notifyWebSocketMessage(*this, isBinary, payload, length);
+    if (!m_endpoint)
+        m_master.notifyWebSocketMessage(*this, isBinary, payload, length);
+    else if (m_endpoint->onMessage)
+        m_endpoint->onMessage(*this, isBinary, payload, length);
 }
 
 void HTTPClient::webSocketSendRaw(const std::string &bytes)

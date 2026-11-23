@@ -155,6 +155,11 @@ void HTTPResponse::redirect(std::string_view url, int statusCode)
     sendError(statusCode, {});
 }
 
+void HTTPResponse::complete()
+{
+    m_client.onResponseSent(m_keepAlive);
+}
+
 void HTTPResponse::abort()
 {
     m_committed = true;

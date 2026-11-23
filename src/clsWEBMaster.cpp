@@ -88,6 +88,12 @@ bool WEBMaster::start()
         RIZLOG_ERROR("no listener configured");
         return false;
     }
+    m_limiter.setMaxConnectionsPerIp(m_settings.maxConnectionsPerIp);
+    m_limiter.setMaxRequestsPerSecond(m_settings.maxRequestsPerSecondPerIp);
+    m_bodyLimit = [this](HTTPMethod method, const std::string &path) {
+        size_t routeLimit = m_router.bodyLimitFor(method, path);
+        return routeLimit ? routeLimit : m_settings.maxBodyBytes;
+    };
     m_listeners.reset(new NetListeners(*m_host));
     const char *ip = m_settings.listenIp.empty() ? nullptr : m_settings.listenIp.c_str();
 

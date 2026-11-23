@@ -40,6 +40,7 @@ public:
     void sendHeaders(int statusCode, bool hasLength, uint64_t length); // headers only (HEAD, 304, file streams)
     void redirect(std::string_view url, int statusCode = 302);
     void sendSharedBody(int statusCode, std::shared_ptr<const std::string> body);  // zero-copy cached body
+    void complete();                                                // after sendHeaders() without a body
     void abort();                                                   // drop the connection now
 
     // error pages (the Content-Length is always the real length)

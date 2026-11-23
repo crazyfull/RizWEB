@@ -97,8 +97,24 @@ cmake --build build && ctest --test-dir build --output-on-failure     # 21 unit 
 python3 tools/bench.py 127.0.0.1 8080 /ip 32 5                        # dependency-free load generator; use wrk for real numbers
 ```
 
-Measured on a 2-core cloud VM with the Python generator (which is the bottleneck): about 45k req/s on `/ip`
-with 32 keep-alive connections. No comparison with other servers has been measured yet.
+### RizWEB vs nginx 1.24 (static files)
+
+`tools/benchVsNginx.sh` serves identical files from both servers. Result on a 2-core cloud VM, wrk on the same
+machine (so the load generator takes CPU from both), localhost, plain HTTP, nginx with `open_file_cache`, one run each:
+
+| file | conns | RizWEB req/s | nginx req/s | RizWEB p99 | nginx p99 |
+|---|---|---|---|---|---|
+| 554 B | 64 | 71.7k | 225.3k | 4.1 ms | 3.2 ms |
+| 554 B | 512 | 92.1k | 161.6k | 10.3 ms | 8.3 ms |
+| 100 KB | 64 | 63.3k | 65.7k | 7.2 ms | 39.0 ms |
+| 100 KB | 512 | 59.4k | 57.4k | 15.4 ms | 27.0 ms |
+| 1 MB | 64 | 5.3k | 5.6k | 14.6 ms | 17.4 ms |
+| 1 MB | 512 | 4.9k | 7.1k | 123.9 ms | 127.5 ms |
+
+Large files are on par (both bound by sendfile / loopback). Small files are 1.7-3x slower than nginx: each request
+still does `realpath` (7 `readlink` calls), `open`/`fstat`/`read`/`close` and three `lseek`s, where nginx serves them from
+its open-file cache. A path/metadata cache and in-memory small-file cache are the next optimisation.
+Idle memory: RizWEB 6 MB RSS vs nginx 12 MB (2 workers); stripped static binary 5.4 MB including BoringSSL.
 
 ## Docker
 

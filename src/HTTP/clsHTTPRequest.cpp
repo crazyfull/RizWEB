@@ -92,6 +92,12 @@ void HTTPRequest::parseUrlEncodedFields(std::string_view text)
     }
 }
 
+bool HTTPRequest::expectsContinue() const
+{
+    const std::string *expect = m_headers.fieldByName("expect");
+    return expect && StringUtils::equalsIgnoreCase(StringUtils::trim(*expect), "100-continue");
+}
+
 std::string HTTPRequest::param(std::string_view name) const
 {
     for (const auto &item : m_params)
@@ -151,6 +157,14 @@ int HTTPRequest::decodeChunked(const char *data, size_t length, size_t limit, st
 
 HTTPParseResult HTTPRequest::parse(const char *data, size_t length, size_t maxBodyBytes, const BodyLimitFunction *limitFor)
 {
+    HTTPParseResult head = parseHead(data, length);
+    if (head != HTTPParseResult::Completed)
+        return head;
+    return parseBody(data, length, maxBodyBytes, limitFor);
+}
+
+HTTPParseResult HTTPRequest::parseHead(const char *data, size_t length)
+{
     std::string_view input(data, length);
     size_t headerEnd = input.find("\r\n\r\n");
     if (headerEnd == std::string_view::npos) {
@@ -160,6 +174,7 @@ HTTPParseResult HTTPRequest::parse(const char *data, size_t length, size_t maxBo
     }
     if (headerEnd > kMaxHeaderBytes)
         return HTTPParseResult::HeaderTooLarge;
+    m_headBytes = headerEnd + 4;
 
     std::string_view head = input.substr(0, headerEnd);
 
@@ -249,18 +264,34 @@ HTTPParseResult HTTPRequest::parse(const char *data, size_t length, size_t maxBo
     else
         m_keepAlive = connection && StringUtils::containsIgnoreCase(*connection, "keep-alive");
 
-    // body: Content-Length or chunked (both together is a smuggling attempt)
-    size_t limit = maxBodyBytes;
+    // body framing: Content-Length or chunked (both together is a smuggling attempt)
     const std::string *contentLength = m_headers.fieldByName("content-length");
     const std::string *transferEncoding = m_headers.fieldByName("transfer-encoding");
-    size_t bodyStart = headerEnd + 4;
-    size_t bodyLength = 0;
-
     if (transferEncoding) {
         if (contentLength || !StringUtils::equalsIgnoreCase(StringUtils::trim(*transferEncoding), "chunked"))
             return contentLength ? HTTPParseResult::BadRequest : HTTPParseResult::NotImplemented;
-        if (limitFor && *limitFor)
-            limit = (*limitFor)(m_method, m_urlPath);
+        m_bodyKind = BodyKind::Chunked;
+    } else if (contentLength) {
+        if (contentLength->empty() || contentLength->size() > 18)
+            return HTTPParseResult::BadRequest;
+        for (char c : *contentLength)
+            if (c < '0' || c > '9')
+                return HTTPParseResult::BadRequest;
+        m_contentLength = strtoull(contentLength->c_str(), nullptr, 10);
+        m_bodyKind = m_contentLength > 0 ? BodyKind::ContentLength : BodyKind::None;
+    }
+    return HTTPParseResult::Completed;
+}
+
+HTTPParseResult HTTPRequest::parseBody(const char *data, size_t length, size_t maxBodyBytes, const BodyLimitFunction *limitFor)
+{
+    const size_t bodyStart = m_headBytes;
+    size_t limit = maxBodyBytes;
+    size_t bodyLength = 0;
+    if (m_bodyKind != BodyKind::None && limitFor && *limitFor)
+        limit = (*limitFor)(m_method, m_urlPath);
+
+    if (m_bodyKind == BodyKind::Chunked) {
         size_t used = 0;
         int state = decodeChunked(data + bodyStart, length - bodyStart, limit, m_body, used);
         if (state == 0)
@@ -272,18 +303,9 @@ HTTPParseResult HTTPRequest::parse(const char *data, size_t length, size_t maxBo
         m_consumed = bodyStart + used;
         bodyLength = m_body.size();
     } else {
-        if (contentLength) {
-            if (contentLength->empty() || contentLength->size() > 12)
-                return HTTPParseResult::BadRequest;
-            for (char c : *contentLength)
-                if (c < '0' || c > '9')
-                    return HTTPParseResult::BadRequest;
-            bodyLength = static_cast<size_t>(strtoull(contentLength->c_str(), nullptr, 10));
-            if (bodyLength > 0 && limitFor && *limitFor)
-                limit = (*limitFor)(m_method, m_urlPath);
-            if (bodyLength > limit)
-                return HTTPParseResult::BodyTooLarge;
-        }
+        bodyLength = static_cast<size_t>(m_contentLength);
+        if (m_contentLength > limit)
+            return HTTPParseResult::BodyTooLarge;
         if (length - bodyStart < bodyLength)
             return HTTPParseResult::Incomplete;
         m_body.assign(data + bodyStart, bodyLength);

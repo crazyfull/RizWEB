@@ -36,6 +36,10 @@ bool HTTPSettings::load(const std::string &path)
     sessionExpirationMinutes = static_cast<uint32_t>(ini.getLong(kServer, "SessionExpirationTime", ini.getLong(kServer, "SeassionExpirationTime", sessionExpirationMinutes)));
     keepAliveSeconds = static_cast<uint32_t>(ini.getLong(kServer, "KeepAliveTime", keepAliveSeconds));
     maxBodyBytes = static_cast<size_t>(ini.getLong(kServer, "MaxBodyBytes", static_cast<long>(maxBodyBytes)));
+    securityHeaders = ini.getBool(kServer, "SecurityHeaders", securityHeaders);
+    contentSecurityPolicy = ini.getString(kServer, "ContentSecurityPolicy", contentSecurityPolicy);
+    hstsSeconds = static_cast<uint32_t>(ini.getLong(kServer, "HstsSeconds", hstsSeconds));
+    maxUploadBytes = static_cast<uint64_t>(ini.getLong(kServer, "MaxUploadBytes", static_cast<long>(maxUploadBytes)));
     maxWebSocketMessageBytes = static_cast<size_t>(ini.getLong(kServer, "MaxWebSocketMessageBytes", static_cast<long>(maxWebSocketMessageBytes)));
     maxConnectionsPerIp = static_cast<uint32_t>(ini.getLong(kServer, "MaxConnectionsPerIp", maxConnectionsPerIp));
     maxRequestsPerSecondPerIp = static_cast<uint32_t>(ini.getLong(kServer, "MaxRequestsPerSecondPerIp", maxRequestsPerSecondPerIp));
@@ -74,6 +78,10 @@ bool HTTPSettings::save(const std::string &path) const
     ini.setLong(kServer, "SessionExpirationTime", sessionExpirationMinutes);
     ini.setLong(kServer, "KeepAliveTime", keepAliveSeconds);
     ini.setLong(kServer, "MaxBodyBytes", static_cast<long>(maxBodyBytes));
+    ini.setBool(kServer, "SecurityHeaders", securityHeaders);
+    ini.setString(kServer, "ContentSecurityPolicy", contentSecurityPolicy);
+    ini.setLong(kServer, "HstsSeconds", hstsSeconds);
+    ini.setLong(kServer, "MaxUploadBytes", static_cast<long>(maxUploadBytes));
     ini.setLong(kServer, "MaxWebSocketMessageBytes", static_cast<long>(maxWebSocketMessageBytes));
     ini.setLong(kServer, "MaxConnectionsPerIp", maxConnectionsPerIp);
     ini.setLong(kServer, "MaxRequestsPerSecondPerIp", maxRequestsPerSecondPerIp);

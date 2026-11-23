@@ -35,8 +35,12 @@ public:
     bool authenticationEnabled = false;
     std::string securePath = "/";
     uint32_t sessionExpirationMinutes = 20;
+    bool securityHeaders = true;        // X-Content-Type-Options: nosniff, X-Frame-Options: SAMEORIGIN, Referrer-Policy: same-origin
+    std::string contentSecurityPolicy;  // sent as Content-Security-Policy when not empty
+    uint32_t hstsSeconds = 0;           // Strict-Transport-Security max-age on HTTPS responses (0 = off)
     uint32_t keepAliveSeconds = 20;     // idle time before a connection is closed
     size_t maxBodyBytes = 1024 * 1024;
+    uint64_t maxUploadBytes = 1024ull * 1024 * 1024;   // streaming routes (stream()/upload()): body limit, 0 = unlimited
     size_t maxWebSocketMessageBytes = 1024 * 1024;
     uint32_t maxConnectionsPerIp = 0;           // 0 = unlimited
     uint32_t maxRequestsPerSecondPerIp = 0;     // 0 = unlimited

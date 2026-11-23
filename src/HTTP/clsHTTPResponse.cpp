@@ -1,4 +1,5 @@
 #include "clsHTTPResponse.h"
+#include "../Utils/clsEscape.h"
 #include "clsHTTPStatusCode.h"
 #include "../Utils/clsCrypto.h"
 #include "../Utils/clsFileUtils.h"
@@ -34,6 +35,11 @@ void HTTPResponse::begin(const HTTPRequest &request)
     m_head = request.method() == HTTPMethod::Head;
     m_keepAlive = request.keepAlive();
     m_http11 = request.isHttp11();
+}
+
+void HTTPResponse::writeEscaped(std::string_view untrusted)
+{
+    m_body.append(Escape::html(untrusted));
 }
 
 static bool hasIllegalChars(std::string_view text)

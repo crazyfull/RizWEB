@@ -66,6 +66,23 @@ HTTPRouter::Route &HTTPRouter::add(HTTPMethod method, const std::string &pattern
     return store(std::move(route));
 }
 
+HTTPRouter::Route &HTTPRouter::addStream(HTTPMethod method, const std::string &pattern, UploadFactory factory)
+{
+    std::unique_ptr<Route> route(new Route);
+    route->method = method;
+    route->pattern = pattern;
+    route->stream = std::move(factory);
+    return store(std::move(route));
+}
+
+const HTTPRouter::Route *HTTPRouter::streamRouteFor(HTTPMethod method, const std::string &path) const
+{
+    if (m_count == 0)
+        return nullptr;
+    const Route *route = find(method, path, nullptr);
+    return route && route->stream ? route : nullptr;
+}
+
 HTTPRouter::Route &HTTPRouter::addWebSocket(const std::string &pattern, WebSocketEndpoint endpoint)
 {
     std::unique_ptr<Route> route(new Route);

@@ -143,7 +143,7 @@ endif()
 # ---------------------------------------------------------------------------
 if(RIZWEB_BUILD_TESTS)
     enable_testing()
-    add_executable(rizweb_tests tests/testMain.cpp tests/requestTest.cpp tests/utilTest.cpp)
+    add_executable(rizweb_tests tests/testMain.cpp tests/requestTest.cpp tests/utilTest.cpp tests/uploadTest.cpp tests/fetchTest.cpp)
     target_link_libraries(rizweb_tests PRIVATE RizWEB)
     add_test(NAME rizweb_tests COMMAND rizweb_tests)
 endif()

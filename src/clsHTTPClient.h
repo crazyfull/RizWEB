@@ -1,8 +1,11 @@
 #ifndef CLSHTTPCLIENT_H
 #define CLSHTTPCLIENT_H
+#include "HTTP/clsHTTPBodyDecoder.h"
 #include "HTTP/clsHTTPRequest.h"
 #include "HTTP/clsHTTPResponse.h"
 #include "HTTP/clsHTTPRouter.h"
+#include "HTTP/clsHTTPUpload.h"
+#include "HTTP/clsHTTPUploadTracker.h"
 #include "HTTP/clsHTTPWSocketParser.h"
 #include "clsNetBackend.h"
 #include <cstdint>
@@ -54,10 +57,15 @@ protected:
 
 private:
     struct FileStream;
+    struct UploadSession;
 
     void handleInput(const char *data, size_t length);
     void dispatch();
     void handleWebSocketUpgrade(const std::shared_ptr<const WebSocketEndpoint> &endpoint);
+    void startUpload(const HTTPRouter::Route &route, std::vector<std::pair<std::string, std::string>> params);
+    size_t feedUpload(const char *data, size_t length);
+    void finishUpload();
+    void abortUpload(int status, const char *message);
     void handleLogin();
     void parseError(HTTPParseResult result);
     void pumpStream();
@@ -79,6 +87,9 @@ private:
     HTTPRequest m_request;
     HTTPResponse m_response;
     std::unique_ptr<FileStream> m_stream;
+    std::unique_ptr<UploadSession> m_upload;     // a streaming route is receiving its body
+    bool m_continueSent = false;                 // "100 Continue" already sent for the request being received
+    bool m_requestKeepAlive = true;              // keep-alive wish of the request while an upload is being decided
     std::vector<int> m_retiredFds;       // fds still referenced by the send queue (sendFile)
 };
 

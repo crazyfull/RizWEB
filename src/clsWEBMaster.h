@@ -3,7 +3,10 @@
 #include "HTTP/HTTPSettings.h"
 #include "HTTP/clsCacheFileType.h"
 #include "HTTP/clsCompressionTypeList.h"
+#include "HTTP/clsHTTPCors.h"
+#include "HTTP/clsHTTPLimiter.h"
 #include "HTTP/clsHTTPRequest.h"
+#include "HTTP/clsHTTPRouter.h"
 #include "HTTP/clsHTTPResponse.h"
 #include "HTTP/clsHTTPSecurity.h"
 #include "HTTP/clsHTTPStaticFiles.h"
@@ -33,6 +36,8 @@ public:
     // true = the request is handled (answered); false = continue with the static file handler
     using HttpHandler = std::function<bool(HTTPClient &, HTTPRequest &, HTTPResponse &)>;
     using AuthenticationHandler = std::function<void(HTTPClient &, HTTPRequest &)>;
+    // Middleware runs for every request before routing. true = the request is answered, stop here.
+    using Middleware = std::function<bool(HTTPClient &, HTTPRequest &, HTTPResponse &)>;
     using ClientHandler = std::function<void(HTTPClient &)>;
     using WebSocketMessageHandler = std::function<void(HTTPClient &, bool isBinary, const char *payload, size_t length)>;
 
@@ -52,6 +57,21 @@ public:
     CompressionTypeList &compressionTypes() { return m_compressionTypes; }
     HTTPClientList &clients() { return m_clients; }
     HTTPStaticFiles &staticFiles() { return m_staticFiles; }
+    HTTPRouter &router() { return m_router; }
+    HTTPCors &cors() { return m_cors; }
+    HTTPLimiter &limiter() { return m_limiter; }
+
+    // Routing (register before start()). The returned route can set a per-route body limit:
+    //   web.post("/upload", handler).bodyLimit = 64 * 1024 * 1024;
+    HTTPRouter::Route &get(const std::string &pattern, RouteHandler handler) { return m_router.add(HTTPMethod::Get, pattern, std::move(handler)); }
+    HTTPRouter::Route &post(const std::string &pattern, RouteHandler handler) { return m_router.add(HTTPMethod::Post, pattern, std::move(handler)); }
+    HTTPRouter::Route &put(const std::string &pattern, RouteHandler handler) { return m_router.add(HTTPMethod::Put, pattern, std::move(handler)); }
+    HTTPRouter::Route &patch(const std::string &pattern, RouteHandler handler) { return m_router.add(HTTPMethod::Patch, pattern, std::move(handler)); }
+    HTTPRouter::Route &del(const std::string &pattern, RouteHandler handler) { return m_router.add(HTTPMethod::Delete, pattern, std::move(handler)); }
+    HTTPRouter::Route &ws(const std::string &pattern, WebSocketEndpoint endpoint) { return m_router.addWebSocket(pattern, std::move(endpoint)); }
+    void use(Middleware middleware) { m_middleware.push_back(std::move(middleware)); }
+    const std::vector<Middleware> &middleware() const { return m_middleware; }
+    const BodyLimitFunction &bodyLimitFunction() const { return m_bodyLimit; }
 
     // Reads settings.ini (created with defaults when missing) and the MIME database.
     void loadSettings(const std::string &path = std::string());
@@ -87,6 +107,11 @@ private:
     CompressionTypeList m_compressionTypes;
     HTTPClientList m_clients;
     HTTPStaticFiles m_staticFiles;
+    HTTPRouter m_router;
+    HTTPCors m_cors;
+    HTTPLimiter m_limiter;
+    std::vector<Middleware> m_middleware;
+    BodyLimitFunction m_bodyLimit;
 
     HttpHandler m_httpHandler;
     AuthenticationHandler m_authHandler;

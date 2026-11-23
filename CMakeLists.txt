@@ -36,6 +36,8 @@ endif()
 option(RIZWEB_ENABLE_TLS "TLS (HTTPS / WSS) with BoringSSL" ON)
 set(RIZWEB_BORINGSSL_DIR "" CACHE PATH "BoringSSL prefix with include/ and lib/ (patched, see netRector scripts/build_boringssl.sh)")
 option(RIZWEB_BUILD_APP "Build the standalone rizweb server" ON)
+option(RIZWEB_BUILD_SHARED "Build RizWEB as a shared library instead of a static one" OFF)
+option(RIZWEB_BUILD_TESTS "Build the unit tests" ${PROJECT_IS_TOP_LEVEL})
 option(RIZWEB_STATIC "Link the server fully static where the platform allows it" ON)
 set(NETRECTOR_DIR "" CACHE PATH "Source tree of ${RIZWEB_BACKEND_NAME}")
 
@@ -77,7 +79,12 @@ endif()
 # ---------------------------------------------------------------------------
 file(GLOB_RECURSE RIZWEB_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 file(GLOB_RECURSE RIZWEB_HEADERS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h")
-add_library(RizWEB STATIC ${RIZWEB_SOURCES} ${RIZWEB_HEADERS})
+if(RIZWEB_BUILD_SHARED)
+    add_library(RizWEB SHARED ${RIZWEB_SOURCES} ${RIZWEB_HEADERS})
+    set_target_properties(RizWEB PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+else()
+    add_library(RizWEB STATIC ${RIZWEB_SOURCES} ${RIZWEB_HEADERS})
+endif()
 add_library(RizWEB::RizWEB ALIAS RizWEB)
 
 target_include_directories(RizWEB PUBLIC
@@ -131,8 +138,18 @@ if(RIZWEB_BUILD_APP)
 endif()
 
 # ---------------------------------------------------------------------------
+# Tests (ctest)
+# ---------------------------------------------------------------------------
+if(RIZWEB_BUILD_TESTS)
+    enable_testing()
+    add_executable(rizweb_tests tests/testMain.cpp tests/requestTest.cpp tests/utilTest.cpp)
+    target_link_libraries(rizweb_tests PRIVATE RizWEB)
+    add_test(NAME rizweb_tests COMMAND rizweb_tests)
+endif()
+
+# ---------------------------------------------------------------------------
 # Install: library, headers (same layout as src/), default resources
 # ---------------------------------------------------------------------------
-install(TARGETS RizWEB ARCHIVE DESTINATION lib)
+install(TARGETS RizWEB ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
 install(DIRECTORY src/ DESTINATION include/RizWEB FILES_MATCHING PATTERN "*.h")
 install(DIRECTORY resource/ DESTINATION share/rizweb/resource)

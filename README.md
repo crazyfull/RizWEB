@@ -37,24 +37,37 @@ Releases for all systems are built by the manual **Release (manual)** GitHub Act
 
 ## Use as a library
 
+Routes work like Go's `http.ServeMux` (`:name` matches one path segment, `*` the rest). Handlers answer
+by writing to `HTTPResponse`; a path with a handler for other methods only gets `405` with an `Allow` header.
+
 ```cpp
 #include "clsWEBMaster.h"
 using namespace rizweb;
 
-WEBMaster web;                       // owns its network host
+WEBMaster web;                                   // owns its network host
 web.settings().httpPort = 8080;
-web.setHttpHandler([](HTTPClient &c, HTTPRequest &req, HTTPResponse &res) {
-    if (req.urlPath() != "/api/ping") return false;      // false -> static files
+
+web.use([](HTTPClient &, HTTPRequest &req, HTTPResponse &res) {   // middleware chain, runs before routing
+    return false;                                                 // true = "I answered, stop here"
+});
+web.cors().allowOrigin("*").allowMethods("GET, POST").allowHeaders("Content-Type");   // preflight handled for you
+
+web.get("/api/users/:id", [](HTTPClient &, HTTPRequest &req, HTTPResponse &res) {
     res.setContentType("application/json");
-    res.write("{\"ok\":true}");
+    res.write("{\"id\":\"" + StringUtils::htmlEscape(req.param("id")) + "\"}");
     res.flush(200);
-    return true;
 });
-web.setWebSocketMessageHandler([](HTTPClient &c, bool binary, const char *data, size_t len) {
-    c.sendText(std::string_view(data, len));
-});
+web.post("/upload", uploadHandler).bodyLimit = 64 * 1024 * 1024;  // per-route body limit (default: MaxBodyBytes)
+
+WebSocketEndpoint chat;                          // any number of endpoints, each with its own callbacks
+chat.onMessage = [](HTTPClient &c, bool binary, const char *data, size_t len) { c.sendText(std::string_view(data, len)); };
+web.ws("/chat", chat);
+
 web.start();
 ```
+
+Requests that match no route fall through to the optional `setHttpHandler`, then to static files.
+Request bodies with `Content-Length` or `Transfer-Encoding: chunked` are supported.
 
 Sharing the reactor of an application that already uses netRector / netRectorClient:
 
@@ -66,10 +79,30 @@ server.start();
 ```
 
 In a CMake project that already builds netRector (or netRectorClient), `add_subdirectory(RizWEB)` reuses
-that target instead of building a second copy.
+that target instead of building a second copy. `-DRIZWEB_BUILD_SHARED=ON` builds a shared library.
 
 Handlers run on reactor threads (several with netRector): protect shared state, answer before returning,
 and use `web.clients().post(id, fn)` to talk to a client from another thread.
+
+## Limits and hardening
+
+`settings.ini`: `MaxBodyBytes`, `MaxConnectionsPerIp` (extra connections are closed), `MaxRequestsPerSecondPerIp`
+(`429` + `Retry-After`); 0 disables a limit. Smuggling (`Content-Length` + `Transfer-Encoding`) and unsupported
+transfer codings are rejected.
+
+## Tests and benchmark
+
+```sh
+cmake --build build && ctest --test-dir build --output-on-failure     # 21 unit tests: parser, chunked, router, limiter, WebSocket codec, ...
+python3 tools/bench.py 127.0.0.1 8080 /ip 32 5                        # dependency-free load generator; use wrk for real numbers
+```
+
+Measured on a 2-core cloud VM with the Python generator (which is the bottleneck): about 45k req/s on `/ip`
+with 32 keep-alive connections. No comparison with other servers has been measured yet.
+
+## Docker
+
+`docker build -t rizweb .` produces a static image (the Dockerfile has not been built in CI yet).
 
 ## Layout
 
@@ -78,7 +111,7 @@ src/clsNetBackend.*     the only place that knows netRector vs netRectorClient
 src/clsWEBMaster.*      server: settings, listeners, TLS, handlers
 src/clsHTTPClient.*     one connection (request loop, WebSocket, file streaming)
 src/clsHTTPClientList.* live connection registry
-src/HTTP/               request, response, static files, cookies, sessions, security, MIME, cache, compression, WebSocket
+src/HTTP/               request, router, CORS, limiter, response, static files, cookies, sessions, security, MIME, cache, compression, WebSocket
 src/Utils/              strings, crypto helpers, ini, files, log
 src/LinuxService/       systemd service helper
 ```

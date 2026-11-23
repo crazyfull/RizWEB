@@ -38,6 +38,8 @@ public:
     uint32_t keepAliveSeconds = 20;     // idle time before a connection is closed
     size_t maxBodyBytes = 1024 * 1024;
     size_t maxWebSocketMessageBytes = 1024 * 1024;
+    uint32_t maxConnectionsPerIp = 0;           // 0 = unlimited
+    uint32_t maxRequestsPerSecondPerIp = 0;     // 0 = unlimited
     bool webSocketSameOriginOnly = true;
     std::string webSocketPath = "/ws";
 };

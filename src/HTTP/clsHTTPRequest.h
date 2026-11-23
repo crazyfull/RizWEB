@@ -3,7 +3,10 @@
 #include "clsHTTPHeaderfields.h"
 #include <cstddef>
 #include <string>
+#include <functional>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace rizweb {
 
@@ -27,9 +30,12 @@ enum class HTTPParseResult
     UriTooLong,         // 414
     HeaderTooLarge,     // 431
     BodyTooLarge,       // 413
-    NotImplemented,     // 501 (Transfer-Encoding / chunked request bodies)
+    NotImplemented,     // 501 (unsupported Transfer-Encoding)
     VersionNotSupported // 505
 };
+
+// Per-request body limit: called once the headers are parsed (method, decoded path) and the request has a body.
+using BodyLimitFunction = std::function<size_t(HTTPMethod, const std::string &urlPath)>;
 
 class HTTPRequest
 {
@@ -37,8 +43,9 @@ public:
     static constexpr size_t kMaxHeaderBytes = 16 * 1024;
     static constexpr size_t kMaxUrlLength = 8 * 1024;
 
-    // Parses the first request found in [data, data + length).
-    HTTPParseResult parse(const char *data, size_t length, size_t maxBodyBytes);
+    // Parses the first request found in [data, data + length). Bodies with Content-Length and
+    // Transfer-Encoding: chunked are supported. |limitFor| (optional) overrides maxBodyBytes per path.
+    HTTPParseResult parse(const char *data, size_t length, size_t maxBodyBytes, const BodyLimitFunction *limitFor = nullptr);
     size_t consumedBytes() const { return m_consumed; }
 
     HTTPMethod method() const { return m_method; }
@@ -57,6 +64,10 @@ public:
     const HTTPHeaderfields &headerFields() const { return m_headers; }
     const HTTPHeaderfields &queryFields() const { return m_query; }
 
+    // Route parameters: ":id" segments and the "*" wildcard of the matched route (set by the router).
+    std::string param(std::string_view name) const;
+    void setParams(std::vector<std::pair<std::string, std::string>> params) { m_params = std::move(params); }
+
     // Filesystem path chosen by the server for this request (set by the HTTP client).
     const std::string &filePath() const { return m_filePath; }
     void setFilePath(const std::string &path) { m_filePath = path; }
@@ -72,12 +83,15 @@ private:
     std::string m_filePath;
     HTTPHeaderfields m_headers;
     HTTPHeaderfields m_query;
+    std::vector<std::pair<std::string, std::string>> m_params;
     bool m_http11 = true;
     bool m_keepAlive = true;
     size_t m_consumed = 0;
 
     static bool normalizePath(std::string_view rawPath, std::string &out);
     void parseUrlEncodedFields(std::string_view text);
+    // 1 = complete (body + consumed set), 0 = need more data, -1 = malformed, -2 = too large
+    static int decodeChunked(const char *data, size_t length, size_t limit, std::string &body, size_t &used);
 };
 
 } // namespace rizweb

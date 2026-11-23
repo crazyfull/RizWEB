@@ -2,6 +2,7 @@
 #define CLSHTTPCLIENT_H
 #include "HTTP/clsHTTPRequest.h"
 #include "HTTP/clsHTTPResponse.h"
+#include "HTTP/clsHTTPRouter.h"
 #include "HTTP/clsHTTPWSocketParser.h"
 #include "clsNetBackend.h"
 #include <cstdint>
@@ -24,7 +25,7 @@ public:
 
     uint32_t id() const { return m_id; }
     bool isWebSocket() const { return m_webSocket; }
-    std::string clientIp() const;
+    const std::string &clientIp() const { return m_ip; }
     // Long-lived connections (for example a status page that is polled rarely) can opt out of the idle timeout.
     void setIdleTimeoutEnabled(bool enabled);
     void setArgument(void *argument) { m_argument = argument; }
@@ -56,7 +57,7 @@ private:
 
     void handleInput(const char *data, size_t length);
     void dispatch();
-    void handleWebSocketUpgrade();
+    void handleWebSocketUpgrade(const std::shared_ptr<const WebSocketEndpoint> &endpoint);
     void handleLogin();
     void parseError(HTTPParseResult result);
     void pumpStream();
@@ -68,6 +69,9 @@ private:
     uint32_t m_id;
     bool m_tls;
     bool m_registered = false;
+    bool m_limited = false;              // holds a connection slot of the per-IP limiter
+    std::string m_ip;
+    std::shared_ptr<const WebSocketEndpoint> m_endpoint;   // WebSocket route that accepted the upgrade
     bool m_webSocket = false;
     bool m_busy = false;                 // a file is being streamed; pipelined input waits
     void *m_argument = nullptr;

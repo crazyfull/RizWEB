@@ -2,6 +2,7 @@
 #define TESTFRAMEWORK_H
 // Minimal test harness: TEST(name) { CHECK(...); CHECK_EQ(a, b); }
 #include <cstdio>
+#include <filesystem>
 #include <functional>
 #include <string>
 #include <vector>
@@ -28,6 +29,12 @@ struct TestRegistrar
 {
     TestRegistrar(const char *name, std::function<void()> body) { testRegistry().push_back({name, std::move(body)}); }
 };
+
+// Writable temp location that exists on every platform.
+inline std::string tempPath(const std::string &name)
+{
+    return (std::filesystem::temp_directory_path() / name).string();
+}
 
 #define TEST(name)                                         \
     static void test_##name();                             \

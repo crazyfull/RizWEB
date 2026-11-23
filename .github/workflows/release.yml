@@ -1,8 +1,15 @@
 name: Release (manual)
 
 # Runs only when started by hand (Actions tab -> "Release (manual)" -> Run workflow).
-# Builds RizWEB for Linux (netRector), Windows and macOS (netRectorClient), all with BoringSSL,
-# and publishes the archives as a GitHub Release.
+#
+# For every target below it builds
+#   * rizweb-<version>-<target>      the standalone server as ONE static executable (+ default resources)
+#   * rizweb-lib-<version>-<target>  the static library package: libRizWEB, the network backend, BoringSSL,
+#                                    all headers and RizWEBConfig.cmake (find_package(RizWEB))
+# for Linux, Windows and macOS on x86_64 and arm64, and publishes them as a GitHub Release.
+#
+# BoringSSL is the stock upstream one: RizWEB needs no patch. (netRector builds with a stock BoringSSL
+# since its "stock-boringssl-support" change; netRectorClient always did.)
 on:
   workflow_dispatch:
     inputs:
@@ -19,17 +26,22 @@ on:
         type: boolean
         default: false
       netrector_ref:
-        description: "crazyfull/netRector ref (Linux backend)"
-        default: "main"
+        description: "crazyfull/netRector ref (Linux backend; it must build with a stock BoringSSL)"
+        default: "stock-boringssl-support"
       netrector_client_ref:
         description: "crazyfull/netRectorClient ref (Windows / macOS backend)"
-        default: "main"
+        default: "master"
       boringssl_ref:
-        description: "google/boringssl commit (must work with netRector's patch_boringssl.sh)"
+        description: "google/boringssl commit"
         default: "289645a450721a7210bf9c69d42bf40a0f1ee730"
+      docker:
+        description: "Also build and push a multi-arch Docker image to ghcr.io"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   build:
@@ -41,13 +53,16 @@ jobs:
         include:
           - { name: linux-x86_64,   os: ubuntu-22.04,     backend: netRector,       archive: tar.gz }
           - { name: linux-arm64,    os: ubuntu-22.04-arm, backend: netRector,       archive: tar.gz }
-          - { name: windows-x86_64, os: windows-latest,   backend: netRectorClient, archive: zip }
+          - { name: windows-x86_64, os: windows-latest,   backend: netRectorClient, archive: zip, msvc_arch: x64 }
+          - { name: windows-arm64,  os: windows-11-arm,   backend: netRectorClient, archive: zip, msvc_arch: arm64 }
           - { name: macos-arm64,    os: macos-latest,     backend: netRectorClient, archive: tar.gz, osx_arch: arm64 }
           - { name: macos-x86_64,   os: macos-latest,     backend: netRectorClient, archive: tar.gz, osx_arch: x86_64 }
 
     env:
       BACKEND_DIR: ${{ github.workspace }}/deps/${{ matrix.backend }}
       BSSL_PREFIX: ${{ github.workspace }}/deps/boringssl-install
+      ZLIB_PREFIX: ${{ github.workspace }}/deps/zlib-install
+      NATIVE: ${{ matrix.osx_arch != 'x86_64' }}      # the macOS x86_64 binary is cross compiled and cannot run here
 
     steps:
       - uses: actions/checkout@v4
@@ -75,28 +90,34 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: x64
+          arch: ${{ matrix.msvc_arch }}
 
-      - name: Windows zlib (vcpkg, static)
+      - name: Static zlib (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: vcpkg install zlib:x64-windows-static
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v1.3.1 https://github.com/madler/zlib.git deps/zlib-src
+          cmake -GNinja -S deps/zlib-src -B deps/zlib-build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=cl -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded \
+            -DCMAKE_INSTALL_PREFIX="$ZLIB_PREFIX" -DZLIB_BUILD_EXAMPLES=OFF
+          cmake --build deps/zlib-build
+          cmake --install deps/zlib-build
 
       - name: Cache BoringSSL
         id: bssl-cache
         uses: actions/cache@v4
         with:
           path: ${{ env.BSSL_PREFIX }}
-          key: bssl-${{ matrix.name }}-${{ inputs.boringssl_ref }}-${{ hashFiles('deps/**/scripts/patch_boringssl.sh') }}
+          key: bssl-stock-${{ matrix.name }}-${{ inputs.boringssl_ref }}
 
-      - name: Build patched BoringSSL
+      - name: Build BoringSSL (stock)
         if: steps.bssl-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
           git clone https://github.com/google/boringssl.git deps/boringssl-src
           git -C deps/boringssl-src checkout "${{ inputs.boringssl_ref }}"
-          "$BACKEND_DIR/scripts/patch_boringssl.sh" deps/boringssl-src
           EXTRA=()
           if [ "$RUNNER_OS" = "Windows" ]; then
             EXTRA+=(-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DOPENSSL_NO_ASM=ON -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl)
@@ -116,9 +137,8 @@ jobs:
           set -euo pipefail
           EXTRA=()
           if [ "$RUNNER_OS" = "Windows" ]; then
-            EXTRA+=(-DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
-                    "-DCMAKE_TOOLCHAIN_FILE=$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
-                    -DVCPKG_TARGET_TRIPLET=x64-windows-static -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded)
+            EXTRA+=(-DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+                    "-DZLIB_ROOT=$ZLIB_PREFIX" -DZLIB_USE_STATIC_LIBS=ON)
           fi
           if [ -n "${{ matrix.osx_arch }}" ]; then
             EXTRA+=(-DCMAKE_OSX_ARCHITECTURES=${{ matrix.osx_arch }})
@@ -126,17 +146,21 @@ jobs:
           cmake -GNinja -S . -B build -DCMAKE_BUILD_TYPE=Release \
             -DNETRECTOR_DIR="$BACKEND_DIR" \
             -DRIZWEB_BORINGSSL_DIR="$BSSL_PREFIX" \
-            -DRIZWEB_ENABLE_TLS=ON -DRIZWEB_STATIC=ON "${EXTRA[@]}"
+            -DRIZWEB_ENABLE_TLS=ON -DRIZWEB_STATIC=ON -DRIZWEB_BUILD_TESTS=ON "${EXTRA[@]}"
 
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Smoke test (not on the cross-compiled macOS build)
-        if: runner.os == 'Linux' || (runner.os == 'macOS' && matrix.osx_arch == 'arm64') || runner.os == 'Windows'
+      - name: Unit and integration tests
+        if: env.NATIVE == 'true'
+        run: ctest --test-dir build --output-on-failure --timeout 300 -C Release
+
+      - name: Smoke test of the executable
+        if: env.NATIVE == 'true'
         shell: bash
         run: |
           mkdir -p smoke/www && echo ok > smoke/www/index.html
-          BIN="$(find build -maxdepth 1 -name 'rizweb*' -type f \( -perm -u+x -o -name '*.exe' \) | head -1)"
+          BIN="$(find build -maxdepth 1 -name 'rizweb' -o -maxdepth 1 -name 'rizweb.exe' | head -1)"
           cp "$BIN" smoke/ && cd smoke
           printf '[httpServer]\nPort = 18080\nLocatedRoot = %s/www\n' "$PWD" > settings.ini
           ./"$(basename "$BIN")" > server.log 2>&1 &
@@ -144,25 +168,76 @@ jobs:
           curl -fsS http://127.0.0.1:18080/ | grep -q '^ok'
           kill %1 || true
 
-      - name: Install and package
+      - name: Check the executable is static (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          file build/rizweb
+          ! ldd build/rizweb 2>&1 | grep -v "not a dynamic executable" | grep -q "=>"
+
+      - name: Package
         shell: bash
         run: |
-          PKG="rizweb-${{ inputs.version }}-${{ matrix.name }}"
-          cmake --install build --prefix "dist/$PKG"
-          if [ "$RUNNER_OS" != "Windows" ]; then strip "dist/$PKG/bin/rizweb" || true; fi
-          cp README.md "dist/$PKG/" || true
-          echo "PKG=$PKG" >> "$GITHUB_ENV"
-          if [ "${{ matrix.archive }}" = "zip" ]; then
-            (cd dist && 7z a -tzip "../$PKG.zip" "$PKG" > /dev/null)
-          else
-            tar -C dist -czf "$PKG.tar.gz" "$PKG"
-          fi
+          set -euo pipefail
+          V="${{ inputs.version }}"; T="${{ matrix.name }}"
+          cmake --install build --prefix stage
+          EXE="rizweb.exe"; [ "$RUNNER_OS" = "Windows" ] || EXE="rizweb"
+          [ "$RUNNER_OS" = "Windows" ] || strip "stage/bin/$EXE" || true
+
+          # 1) standalone server: one static executable + default resources
+          APP="rizweb-$V-$T"
+          mkdir -p "dist/$APP"
+          cp "stage/bin/$EXE" "dist/$APP/"
+          cp -r stage/share/rizweb/resource "dist/$APP/resource"
+          cp README.md "dist/$APP/" || true
+
+          # 2) static library package: lib/ include/ (find_package(RizWEB) via lib/cmake/RizWEB)
+          LIB="rizweb-lib-$V-$T"
+          mkdir -p "dist/$LIB"
+          cp -r stage/lib stage/include "dist/$LIB/"
+          cp README.md "dist/$LIB/" || true
+
+          mkdir -p out
+          for P in "$APP" "$LIB"; do
+            if [ "${{ matrix.archive }}" = "zip" ]; then
+              (cd dist && 7z a -tzip "../out/$P.zip" "$P" > /dev/null)
+            else
+              tar -C dist -czf "out/$P.tar.gz" "$P"
+            fi
+          done
+          ls -la out
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: ${{ env.PKG }}.${{ matrix.archive }}
+          path: out/*
           if-no-files-found: error
+
+  docker:
+    if: ${{ inputs.docker }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            NETRECTOR_REF=${{ inputs.netrector_ref }}
+            BORINGSSL_REF=${{ inputs.boringssl_ref }}
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ inputs.version }}
+            ${{ steps.image.outputs.name }}:latest
 
   release:
     needs: build

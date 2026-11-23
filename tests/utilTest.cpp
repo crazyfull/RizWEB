@@ -54,7 +54,7 @@ TEST(httpDates)
 
 TEST(iniFile)
 {
-    std::string path = "/tmp/rizweb-test.ini";
+    std::string path = tempPath("rizweb-test.ini");
     FileUtils::writeFile(path, "# c\n[a]\nx = 5\nflag=true\n name = hello world \n");
     IniFile ini;
     CHECK(ini.load(path));

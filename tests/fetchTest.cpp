@@ -26,7 +26,7 @@ struct TestServer
         web.settings().httpPort = kHttpPort;
         web.settings().sslPort = kHttpsPort;
         web.settings().selfSignedTls = true;
-        web.settings().locatedRoot = "/tmp";
+        web.settings().locatedRoot = tempPath("");
 
         web.get("/hello", [](HTTPClient &, HTTPRequest &, HTTPResponse &res) { res.setContentType("text/plain"); res.write("hello client"); res.flush(200); });
         web.get("/big", [](HTTPClient &, HTTPRequest &, HTTPResponse &res) { res.setContentType("application/octet-stream"); res.write(std::string(300000, 'x')); res.flush(200); });
@@ -221,7 +221,7 @@ TEST(clientSharedHost)
 TEST(clientDownloadAndStreaming)
 {
     HTTPFetcher fetcher;
-    std::string path = "/tmp/rizweb-download-test.bin";
+    std::string path = tempPath("rizweb-download-test.bin");
     std::remove(path.c_str());
     HTTPFetchRequest request;
     request.url = url("/big");

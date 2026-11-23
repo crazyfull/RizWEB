@@ -3,7 +3,7 @@
 #   tools/benchVsNginx.sh /path/to/rizweb
 set -euo pipefail
 RIZWEB=$(realpath "${1:?usage: $0 /path/to/rizweb}")
-WORK=$(mktemp -d); trap 'pkill -f "$WORK" || true; nginx -c "$WORK/nginx.conf" -s stop 2>/dev/null || true' EXIT
+WORK=$(mktemp -d); chmod 755 "$WORK"; trap 'pkill -f "$WORK" || true; nginx -c "$WORK/nginx.conf" -s stop 2>/dev/null || true' EXIT
 mkdir -p "$WORK/www" "$WORK/rizweb"
 python3 - "$WORK/www" <<'PY'
 import os, sys
@@ -25,7 +25,8 @@ cp "$RIZWEB" "$WORK/rizweb/rizweb"; cp -r "$(dirname "$0")/../resource" "$WORK/r
 sed -i "s#LocatedRoot = .*#LocatedRoot = $WORK/www#" "$WORK/rizweb/settings.ini"
 (cd "$WORK/rizweb" && exec ./rizweb >/dev/null 2>&1) &
 nginx -c "$WORK/nginx.conf"; sleep 1
+for p in 8080 8081; do [ "$(curl -s -o /dev/null -w %{http_code} http://127.0.0.1:$p/index.html)" = 200 ] || { echo "server on port $p does not answer 200 - aborting"; exit 1; }; done
 for f in index.html 100k.bin 1m.bin; do for c in 64 512; do for p in 8080 8081; do
   printf '%-5s %-10s c=%-4s ' "$([ $p = 8080 ] && echo rizweb || echo nginx)" "$f" "$c"
-  wrk -t2 -c$c -d8s --latency "http://127.0.0.1:$p/$f" | awk '/Requests\/sec/{r=$2}/Transfer\/sec/{t=$2}/ 99%/{p=$2}END{print "req/s=" r " xfer=" t " p99=" p}'
+  wrk -t2 -c$c -d8s --latency "http://127.0.0.1:$p/$f" | awk '/Requests\/sec/{r=$2}/Transfer\/sec/{t=$2}/ 99%/{p=$2}/Non-2xx/{e=" NON-2XX!"}END{print "req/s=" r " xfer=" t " p99=" p e}'
 done; done; done

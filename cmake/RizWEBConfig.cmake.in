@@ -1,0 +1,16 @@
+# RizWEB package: static library + everything it needs (network backend, BoringSSL).
+#   find_package(RizWEB REQUIRED)            # with CMAKE_PREFIX_PATH pointing at this folder
+#   target_link_libraries(myapp PRIVATE RizWEB::RizWEB)
+get_filename_component(_rizweb_prefix "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+@RIZWEB_CONFIG_FIND_ZLIB@
+
+if(NOT TARGET RizWEB::RizWEB)
+    add_library(RizWEB::RizWEB INTERFACE IMPORTED)
+    set_target_properties(RizWEB::RizWEB PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${_rizweb_prefix}/include/RizWEB;${_rizweb_prefix}/include/@RIZWEB_BACKEND_NAME@@RIZWEB_CONFIG_BSSL_INCLUDE@"
+        INTERFACE_COMPILE_DEFINITIONS "@RIZWEB_CONFIG_DEFINITIONS@"
+        INTERFACE_LINK_LIBRARIES "${_rizweb_prefix}/lib/$<TARGET_FILE_NAME:RizWEB>;${_rizweb_prefix}/lib/$<TARGET_FILE_NAME:@RIZWEB_BACKEND_NAME@>@RIZWEB_CONFIG_BSSL_LIBS@;@RIZWEB_CONFIG_LINK_EXTRA@")
+endif()

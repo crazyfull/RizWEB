@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
+#include <vector>
 
 using namespace rizweb;
 
@@ -26,6 +27,8 @@ struct AsyncServer
         web.settings().httpPort = kPort;
         web.settings().sslPort = 0;
         web.settings().asyncTimeoutSeconds = 2;
+        web.settings().workerThreads = 2;
+        web.settings().workerQueueLimit = 2;
         web.get("/slow/:ms", [](HTTPClient &, HTTPRequest &req, HTTPResponse &res) {
             int ms = std::atoi(req.param("ms").c_str());
             std::shared_ptr<AsyncResponse> async = res.defer();
@@ -39,6 +42,14 @@ struct AsyncServer
                 });
             }).detach();
         });
+        web.get("/work/:ms", web.offload([](const HTTPRequest &req, WorkerReply &reply) {
+            int ms = std::atoi(req.param("ms").c_str());
+            std::this_thread::sleep_for(std::chrono::milliseconds(ms));       // a blocking call (sqlite, ...)
+            reply.setContentType("text/plain");
+            reply.write("work ");
+            reply.write(req.param("ms"));
+            reply.flush(200);
+        }));
         web.get("/fast", [](HTTPClient &, HTTPRequest &, HTTPResponse &res) { res.write("fast"); res.flush(200); });
         web.get("/never", [](HTTPClient &, HTTPRequest &, HTTPResponse &res) { res.defer(); });
         web.start();
@@ -177,6 +188,57 @@ TEST(asyncClientHangsUpFirst)
     ::send(again, fastRequest.data(), fastRequest.size(), 0);
     CHECK(readResponses(again, 1).find("fast") != std::string::npos);
     ::close(again);
+}
+
+TEST(workerPoolRunsBlockingHandlersInParallel)
+{
+    int a = connectLocal();
+    int b = connectLocal();
+    int quick = connectLocal();
+    CHECK(a >= 0 && b >= 0 && quick >= 0);
+    std::string work = "GET /work/300 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+    auto start = std::chrono::steady_clock::now();
+    ::send(a, work.data(), work.size(), 0);
+    ::send(b, work.data(), work.size(), 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::string fastRequest = "GET /fast HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+    ::send(quick, fastRequest.data(), fastRequest.size(), 0);
+    CHECK(readResponses(quick, 1).find("fast") != std::string::npos);
+    auto fastMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+    CHECK(fastMs < 200);                // both workers are sleeping, the reactor is not
+    CHECK(readResponses(a, 1).find("work 300") != std::string::npos);
+    CHECK(readResponses(b, 1).find("work 300") != std::string::npos);
+    auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+    CHECK(totalMs < 550);               // two 300 ms jobs ran side by side, not one after the other
+    ::close(a);
+    ::close(b);
+    ::close(quick);
+}
+
+TEST(workerPoolAnswers503WhenQueueIsFull)
+{
+    // 2 workers + queue of 2 = 4 requests are accepted, the rest is refused immediately
+    std::vector<int> sockets;
+    std::string work = "GET /work/400 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+    for (int i = 0; i < 7; ++i) {
+        int fd = connectLocal();
+        CHECK(fd >= 0);
+        ::send(fd, work.data(), work.size(), 0);
+        sockets.push_back(fd);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    int busy = 0, done = 0;
+    for (int fd : sockets) {
+        std::string reply = readResponses(fd, 1);
+        if (reply.find("503") != std::string::npos)
+            ++busy;
+        else if (reply.find("work 400") != std::string::npos)
+            ++done;
+        ::close(fd);
+    }
+    CHECK(busy >= 1);
+    CHECK(done >= 2);
+    CHECK_EQ(busy + done, 7);
 }
 
 #endif // !_WIN32

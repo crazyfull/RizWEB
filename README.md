@@ -102,7 +102,7 @@ target_link_libraries(myapp PRIVATE RizWEB::RizWEB)     # pulls in the backend, 
 | `IsDirectoryBrowsing` | | escaped directory listing |
 | `IsUseAuthentication`, `SecurePath`, `AuthRoot`, `SessionExpirationTime` | | login protected area |
 | `WorkerThreads`, `WorkerQueue` | 4, 1024 | worker pool for `offload()` handlers and the number of jobs that may wait before requests get `503` |
-| `AsyncTimeout` | 30 | seconds a deferred (async) response may stay unanswered before the connection is closed |
+| `AsyncTimeout` | 30 | seconds a deferred (async) response may stay unanswered; then the client gets `504` and the connection is closed |
 | `KeepAliveTime`, `MaxBodyBytes`, `MaxUploadBytes`, `MaxWebSocketMessageBytes` | | limits (0 = unlimited where it makes sense) |
 | `MaxConnectionsPerIp`, `MaxRequestsPerSecondPerIp` | | per-IP limits (extra connections closed, `429` + `Retry-After`) |
 | `FileCacheSeconds` | 1 | static file metadata / small-content cache (0 = off) |
@@ -169,7 +169,7 @@ web.get("/weather", [&](HTTPClient &, HTTPRequest &, HTTPResponse &res) {
 ```
 
 `respond()` works from any thread and returns `false` if the client has gone; `send(status, type, body)` and
-`sendError()` are shortcuts. If nobody answers within `AsyncTimeout` the connection is closed. `defer()` is not available
+`sendError()` are shortcuts. If nobody answers within `AsyncTimeout` the client gets `504 Gateway Timeout` and the connection is closed. `defer()` is not available
 on streaming (upload) routes.
 
 ### Blocking work: worker pool (sqlite, synchronous libraries)
@@ -332,8 +332,8 @@ plain HTTP, every request checked for 2xx). Two complete runs; each cell shows t
 
 Small files: RizWEB is at or above nginx. 100 KB: below nginx at 64 connections, above at 512. **1 MB at 512 connections:
 RizWEB is about 30 % slower than nginx** (the one clear weakness; not investigated). Tail latency is as good as nginx's here;
-earlier measurements with high p99 for small files were taken on a machine that was busy with other work and are not repeated
-in this README.
+earlier measurements showed a much higher p99 for small files; the cause was not established (the benchmark script leaked a
+server process between runs, which is the likely reason) and it did not reproduce in the clean runs above.
 
 ### 10k+ concurrent connections
 

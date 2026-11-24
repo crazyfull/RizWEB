@@ -29,8 +29,8 @@ on:
         description: "crazyfull/netRector ref (Linux backend; it must build with a stock BoringSSL)"
         default: "stock-boringssl-support"
       netrector_client_ref:
-        description: "crazyfull/netRectorClient ref (Windows / macOS backend)"
-        default: "master"
+        description: "crazyfull/netRectorClient ref (Windows / macOS backend; it must build with a stock BoringSSL)"
+        default: "stock-boringssl-support"
       boringssl_ref:
         description: "google/boringssl commit"
         default: "289645a450721a7210bf9c69d42bf40a0f1ee730"

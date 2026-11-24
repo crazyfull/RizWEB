@@ -214,13 +214,13 @@ void HTTPResponse::sendError(int statusCode, std::string_view detail)
         return;
     const char *reason = HTTPStatusCode::reasonPhrase(statusCode);
     m_body.clear();
-    m_body.append("<!doctype html><html><head><meta charset=\"utf-8\"><title>");
+    m_body.append("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>");
     m_body.appendNumber(static_cast<uint64_t>(statusCode));
     m_body.append(' ');
     m_body.append(reason);
-    m_body.append("</title><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"></head><body><h1>");
+    m_body.append("</title><style>*{box-sizing:border-box;caret-color:transparent !important;}body{font-family:system-ui,-apple-system,sans-serif;background:radial-gradient(circle at top,#1e293b 0%,#090d16 100%);color:#f8fafc;display:grid;place-items:center;min-height:100vh;text-align:center;padding:20px;}.error{width:100%;max-width:440px;text-align:center;}.code{margin:0;color:#3baff6;font-size:clamp(80px,20vw,120px);font-weight:800;line-height:1;}footer{position:fixed;bottom:20px;left:0;width:100%;color:#64748b;font-size:11px;text-align:center;}h1{margin:24px 0 10px;font-size:24px;font-weight:650;}p{margin:0;color:#94a3b8;font-size:15px;line-height:1.7;}@media (max-width:480px){h1{font-size:21px;}p{font-size:14px;}}</style></head><body><main class=\"error\"><div class=\"code\">");
     m_body.appendNumber(static_cast<uint64_t>(statusCode));
-    m_body.append(' ');
+    m_body.append("</div><h1>");
     m_body.append(reason);
     m_body.append("</h1>");
     if (!detail.empty()) {
@@ -228,7 +228,7 @@ void HTTPResponse::sendError(int statusCode, std::string_view detail)
         m_body.append(Escape::html(detail));
         m_body.append("</p>");
     }
-    m_body.append("<hr></body></html>");
+    m_body.append("</main><footer>Powered by RizWEB</footer></body></html>");
     setHeaderField("Content-Type", "text/html; charset=utf-8");
     flush(statusCode);
 }

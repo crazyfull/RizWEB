@@ -5,7 +5,7 @@
 // Semantic versioning: MAJOR = incompatible API change, MINOR = new feature, PATCH = fix only.
 #define RIZWEB_VERSION_MAJOR 2
 #define RIZWEB_VERSION_MINOR 3
-#define RIZWEB_VERSION_PATCH 0
+#define RIZWEB_VERSION_PATCH 2
 
 #define RIZWEB_VERSION_STR2(x) #x
 #define RIZWEB_VERSION_STR(x) RIZWEB_VERSION_STR2(x)

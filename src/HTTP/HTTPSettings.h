@@ -39,6 +39,7 @@ public:
     std::string contentSecurityPolicy;  // sent as Content-Security-Policy when not empty
     uint32_t hstsSeconds = 0;           // Strict-Transport-Security max-age on HTTPS responses (0 = off)
     uint32_t keepAliveSeconds = 20;     // idle time before a connection is closed
+    uint32_t asyncTimeoutSeconds = 30;  // how long a deferred (async) response may stay unanswered; 0 = unlimited
     size_t maxBodyBytes = 1024 * 1024;
     uint64_t maxUploadBytes = 1024ull * 1024 * 1024;   // streaming routes (stream()/upload()): body limit, 0 = unlimited
     size_t maxWebSocketMessageBytes = 1024 * 1024;

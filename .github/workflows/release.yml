@@ -29,8 +29,8 @@ on:
         description: "crazyfull/netRector ref (Linux backend; it must build with a stock BoringSSL)"
         default: "stock-boringssl-support"
       netrector_client_ref:
-        description: "crazyfull/netRectorClient ref (Windows / macOS backend)"
-        default: "master"
+        description: "crazyfull/netRectorClient ref (Windows / macOS backend; it must build with a stock BoringSSL)"
+        default: "stock-boringssl-support"
       boringssl_ref:
         description: "google/boringssl commit"
         default: "289645a450721a7210bf9c69d42bf40a0f1ee730"
@@ -162,7 +162,8 @@ jobs:
           mkdir -p smoke/www && echo ok > smoke/www/index.html
           BIN="$(find build -maxdepth 1 -name 'rizweb' -o -maxdepth 1 -name 'rizweb.exe' | head -1)"
           cp "$BIN" smoke/ && cd smoke
-          printf '[httpServer]\nPort = 18080\nLocatedRoot = %s/www\n' "$PWD" > settings.ini
+          ROOT="$(pwd -W 2>/dev/null || pwd)"      # native Windows path under MSYS
+          printf '[httpServer]\nPort = 18080\nLocatedRoot = %s/www\n' "$ROOT" > settings.ini
           ./"$(basename "$BIN")" > server.log 2>&1 &
           sleep 3
           curl -fsS http://127.0.0.1:18080/ | grep -q '^ok'

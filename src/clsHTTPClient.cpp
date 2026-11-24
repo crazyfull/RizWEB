@@ -154,6 +154,7 @@ void HTTPClient::handleInput(const char *data, size_t length)
 
     while (left > 0 && !m_busy && !m_webSocket && !m_upload && getStatus() == Connected) {
         m_request = HTTPRequest();
+        m_streamRequest = false;
         HTTPParseResult result = m_request.parseHead(position, left);
         if (result == HTTPParseResult::Incomplete)
             break;
@@ -165,6 +166,7 @@ void HTTPClient::handleInput(const char *data, size_t length)
 
         const HTTPRouter::Route *streamRoute = m_master.router().streamRouteFor(m_request.method(), m_request.urlPath());
         if (streamRoute) {
+            m_streamRequest = true;
             // Streaming route: the body is handed to the route while it arrives. Until the route accepts the
             // request the connection is marked "close", because rejecting it leaves the body unread.
             position += m_request.headBytes();
@@ -405,7 +407,7 @@ void HTTPClient::dispatch()
 
     // 5. middleware chain
     for (const WEBMaster::Middleware &middleware : m_master.middleware()) {
-        if (middleware(*this, m_request, m_response) || m_response.isCommitted())
+        if (middleware(*this, m_request, m_response) || m_response.isHandled())
             return;
     }
 
@@ -426,7 +428,7 @@ void HTTPClient::dispatch()
             }
             m_request.setParams(std::move(params));
             route->handler(*this, m_request, m_response);
-            if (!m_response.isCommitted())
+            if (!m_response.isHandled())
                 m_response.internalServerError("The handler did not produce a response.");
             return;
         case HTTPRouter::Result::MethodNotAllowed:
@@ -446,7 +448,7 @@ void HTTPClient::dispatch()
         handleWebSocketUpgrade(nullptr);
         return;
     }
-    if (m_master.notifyHttpRequest(*this, m_request, m_response) || m_response.isCommitted())
+    if (m_master.notifyHttpRequest(*this, m_request, m_response) || m_response.isHandled())
         return;
 
     // 8. files
@@ -547,9 +549,24 @@ void HTTPClient::webSocketSendRaw(const std::string &bytes)
 // sending
 // ---------------------------------------------------------------------------------------------
 
-void HTTPClient::sendBuffer(const std::string &data)
+void HTTPClient::sendBuffer(std::string_view data)
 {
     if (!data.empty() && !send(data.data(), data.size()))
+        RIZLOG_DEBUG("client %u: send failed (connection closing or queue full)", m_id);
+}
+
+void HTTPClient::sendParts(std::string_view first, std::string_view second)
+{
+    if (second.empty()) {
+        sendBuffer(first);
+        return;
+    }
+    struct iovec parts[2];
+    parts[0].iov_base = const_cast<char *>(first.data());
+    parts[0].iov_len = first.size();
+    parts[1].iov_base = const_cast<char *>(second.data());
+    parts[1].iov_len = second.size();
+    if (!sendv(parts, 2))
         RIZLOG_DEBUG("client %u: send failed (connection closing or queue full)", m_id);
 }
 
@@ -563,6 +580,38 @@ void HTTPClient::sendShared(std::shared_ptr<const std::string> body)
     const std::string *raw = body.get();
     auto *holder = new std::shared_ptr<const std::string>(std::move(body));
     sendNoCopy(raw->data(), raw->size(), &HTTPClient::releaseShared, holder);
+}
+
+std::shared_ptr<AsyncResponse> HTTPClient::beginDeferred()
+{
+    if (m_streamRequest || m_deferred || m_webSocket || getStatus() != Connected)
+        return nullptr;
+    m_deferred = true;
+    m_busy = true;                      // requests pipelined behind this one wait in m_input
+    ++m_deferToken;
+    setIdleTimeout(m_master.settings().asyncTimeoutSeconds);   // an answer that never comes ends the connection
+    return std::shared_ptr<AsyncResponse>(new AsyncResponse(m_master.clients(), m_id, m_deferToken));
+}
+
+void HTTPClient::completeDeferred(uint64_t token, const AsyncResponse::Writer &writer)
+{
+    if (!m_deferred || token != m_deferToken || getStatus() != Connected)
+        return;                         // stale handle: already answered, timed out or reused
+    m_deferred = false;
+    m_response.m_deferred = false;
+    if (writer)
+        writer(m_response);
+    if (!m_response.isCommitted())
+        m_response.internalServerError("The async handler did not produce a response.");
+    m_busy = (m_stream != nullptr);     // the writer may have started a file stream
+    setIdleTimeout(m_master.settings().keepAliveSeconds);
+
+    // requests that arrived while the answer was pending
+    if (!m_busy && !m_input.empty() && getStatus() == Connected && m_response.keepAlive()) {
+        std::string pending;
+        pending.swap(m_input);
+        handleInput(pending.data(), pending.size());
+    }
 }
 
 void HTTPClient::onResponseSent(bool keepAlive)

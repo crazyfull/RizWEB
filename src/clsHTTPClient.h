@@ -1,5 +1,6 @@
 #ifndef CLSHTTPCLIENT_H
 #define CLSHTTPCLIENT_H
+#include "HTTP/clsHTTPAsyncResponse.h"
 #include "HTTP/clsHTTPBodyDecoder.h"
 #include "HTTP/clsHTTPRequest.h"
 #include "HTTP/clsHTTPResponse.h"
@@ -12,6 +13,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace rizweb {
@@ -38,10 +40,15 @@ public:
     void authenticationResponse(bool successful, const std::string &message = std::string());
 
     // --- used by HTTPResponse / static file handler ---
-    void sendBuffer(const std::string &data);
+    void sendBuffer(std::string_view data);
+    void sendParts(std::string_view first, std::string_view second);   // one writev / one TLS record
     void sendShared(std::shared_ptr<const std::string> body);
     bool streamFile(const std::string &path, uint64_t offset, uint64_t length, bool keepAlive);
     void onResponseSent(bool keepAlive);
+
+    // --- deferred (async) responses, see HTTPResponse::defer() / AsyncResponse ---
+    std::shared_ptr<AsyncResponse> beginDeferred();
+    void completeDeferred(uint64_t token, const AsyncResponse::Writer &writer);   // reactor thread only
 
 protected:
     // NetSocket hooks
@@ -81,6 +88,9 @@ private:
     std::string m_ip;
     std::shared_ptr<const WebSocketEndpoint> m_endpoint;   // WebSocket route that accepted the upgrade
     bool m_webSocket = false;
+    bool m_deferred = false;             // the answer to the current request is produced later; pipelined input waits
+    uint64_t m_deferToken = 0;
+    bool m_streamRequest = false;        // the current request belongs to a streaming route (cannot be deferred)
     bool m_busy = false;                 // a file is being streamed; pipelined input waits
     void *m_argument = nullptr;
     std::string m_input;

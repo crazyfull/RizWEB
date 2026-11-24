@@ -2,6 +2,8 @@
 #define CLSHTTPRESPONSE_H
 #include "clsHTTPCookie.h"
 #include "clsHTTPRequest.h"
+#include "clsHTTPAsyncResponse.h"
+#include "clsResponseBuffer.h"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -30,12 +32,14 @@ public:
     void setContentType(std::string_view type) { setHeaderField("Content-Type", type); }
 
     // body
+    // Appends to a pooled buffer (no std::string, no heap for ordinary short responses).
     void write(std::string_view data) { m_body.append(data); }
-    void write(const std::string &data) { m_body.append(data); }
+    void write(const std::string &data) { m_body.append(data.data(), data.size()); }
     void write(const char *data) { m_body.append(data); }
+    void write(const char *data, size_t length) { m_body.append(data, length); }
     // Appends untrusted text as HTML text (escaped). Use for user supplied values inside markup you write yourself.
     void writeEscaped(std::string_view untrusted);
-    void write(long long number) { m_body.append(std::to_string(number)); }
+    void write(long long number);
 
     // sending
     void flush(int statusCode);                                     // headers + body, then done
@@ -44,6 +48,10 @@ public:
     void sendSharedBody(int statusCode, std::shared_ptr<const std::string> body);  // zero-copy cached body
     void complete();                                                // after sendHeaders() without a body
     void abort();                                                   // drop the connection now
+
+    // Answer later without blocking the reactor thread: returns a handle and the handler may return at once.
+    // Returns nullptr when this request cannot be deferred (streaming upload routes). See AsyncResponse.
+    std::shared_ptr<AsyncResponse> defer();
 
     // error pages (the Content-Length is always the real length)
     void sendError(int statusCode, std::string_view detail = {});
@@ -58,20 +66,24 @@ public:
 
     int statusCode() const { return m_statusCode; }
     bool isCommitted() const { return m_committed; }
+    bool isDeferred() const { return m_deferred; }
+    bool isHandled() const { return m_committed || m_deferred; }   // answered, or will be answered via AsyncResponse
     bool isHeadRequest() const { return m_head; }
     bool keepAlive() const { return m_keepAlive; }
     void forceClose() { m_keepAlive = false; }
     void setKeepAlive(bool keepAlive) { m_keepAlive = keepAlive; }
 
 private:
-    void buildHead(std::string &out, int statusCode, bool hasLength, uint64_t length);
+    void buildHead(ResponseBuffer &out, int statusCode, bool hasLength, uint64_t length);
     void finish();
+    friend class HTTPClient;
 
     HTTPClient &m_client;
-    std::string m_headers;
-    std::string m_body;
+    ResponseBuffer m_headers;           // header lines added by the handler ("Name: value\r\n")
+    ResponseBuffer m_body;
     int m_statusCode = 0;
     bool m_committed = false;
+    bool m_deferred = false;
     bool m_head = false;
     bool m_keepAlive = true;
     bool m_http11 = true;

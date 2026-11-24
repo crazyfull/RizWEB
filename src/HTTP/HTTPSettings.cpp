@@ -35,6 +35,7 @@ bool HTTPSettings::load(const std::string &path)
     securePath = ini.getString(kServer, "SecurePath", securePath);
     sessionExpirationMinutes = static_cast<uint32_t>(ini.getLong(kServer, "SessionExpirationTime", ini.getLong(kServer, "SeassionExpirationTime", sessionExpirationMinutes)));
     keepAliveSeconds = static_cast<uint32_t>(ini.getLong(kServer, "KeepAliveTime", keepAliveSeconds));
+    asyncTimeoutSeconds = static_cast<uint32_t>(ini.getLong(kServer, "AsyncTimeout", asyncTimeoutSeconds));
     maxBodyBytes = static_cast<size_t>(ini.getLong(kServer, "MaxBodyBytes", static_cast<long>(maxBodyBytes)));
     securityHeaders = ini.getBool(kServer, "SecurityHeaders", securityHeaders);
     contentSecurityPolicy = ini.getString(kServer, "ContentSecurityPolicy", contentSecurityPolicy);
@@ -77,6 +78,7 @@ bool HTTPSettings::save(const std::string &path) const
     ini.setString(kServer, "SecurePath", securePath);
     ini.setLong(kServer, "SessionExpirationTime", sessionExpirationMinutes);
     ini.setLong(kServer, "KeepAliveTime", keepAliveSeconds);
+    ini.setLong(kServer, "AsyncTimeout", asyncTimeoutSeconds);
     ini.setLong(kServer, "MaxBodyBytes", static_cast<long>(maxBodyBytes));
     ini.setBool(kServer, "SecurityHeaders", securityHeaders);
     ini.setString(kServer, "ContentSecurityPolicy", contentSecurityPolicy);

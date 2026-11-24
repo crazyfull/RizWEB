@@ -1,4 +1,4 @@
 #ifndef CLSVERSION_H
 #define CLSVERSION_H
-#define RIZWEB_VERSION "2.2.0"
+
 #endif // CLSVERSION_H

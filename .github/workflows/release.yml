@@ -162,7 +162,8 @@ jobs:
           mkdir -p smoke/www && echo ok > smoke/www/index.html
           BIN="$(find build -maxdepth 1 -name 'rizweb' -o -maxdepth 1 -name 'rizweb.exe' | head -1)"
           cp "$BIN" smoke/ && cd smoke
-          printf '[httpServer]\nPort = 18080\nLocatedRoot = %s/www\n' "$PWD" > settings.ini
+          ROOT="$(pwd -W 2>/dev/null || pwd)"      # native Windows path under MSYS
+          printf '[httpServer]\nPort = 18080\nLocatedRoot = %s/www\n' "$ROOT" > settings.ini
           ./"$(basename "$BIN")" > server.log 2>&1 &
           sleep 3
           curl -fsS http://127.0.0.1:18080/ | grep -q '^ok'

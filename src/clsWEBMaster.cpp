@@ -153,6 +153,7 @@ bool WEBMaster::start()
         RIZLOG_ERROR("no listener configured");
         return false;
     }
+    m_deadlines.start();
     m_workers.start(m_settings.workerThreads, m_settings.workerQueueLimit);
     m_limiter.setMaxConnectionsPerIp(m_settings.maxConnectionsPerIp);
     m_limiter.setMaxRequestsPerSecond(m_settings.maxRequestsPerSecondPerIp);
@@ -191,6 +192,7 @@ void WEBMaster::stop()
 {
     if (!m_running && !m_listeners)
         return;
+    m_deadlines.stop();
     m_workers.stop();                      // first: a running job still answers through a live reactor
     if (m_ownsHost) {
 #if defined(RIZWEB_USE_NETRECTOR)

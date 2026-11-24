@@ -1,4 +1,6 @@
 #include "clsHTTPClient.h"
+#include <atomic>
+#include <chrono>
 #include "HTTP/clsHTTPCookie.h"
 #include "HTTP/clsHTTPSecurity.h"
 #include "HTTP/clsHTTPStaticFiles.h"
@@ -82,6 +84,10 @@ void HTTPClient::onAccepted()
 
 void HTTPClient::onClose()
 {
+    if (m_deferTimer != 0) {
+        m_master.deadlines().cancel(m_deferTimer);
+        m_deferTimer = 0;
+    }
     if (m_upload) {
         if (m_upload->progress)
             m_upload->progress->state = UploadProgress::Failed;
@@ -588,8 +594,24 @@ std::shared_ptr<AsyncResponse> HTTPClient::beginDeferred()
         return nullptr;
     m_deferred = true;
     m_busy = true;                      // requests pipelined behind this one wait in m_input
-    ++m_deferToken;
-    setIdleTimeout(m_master.settings().asyncTimeoutSeconds);   // an answer that never comes ends the connection
+    static std::atomic<uint64_t> nextToken { 1 };
+    m_deferToken = nextToken++;
+    const uint32_t seconds = m_master.settings().asyncTimeoutSeconds;
+    setIdleTimeout(0);                  // the deferral has its own deadline (an idle sweep would just drop the socket)
+    if (seconds != 0) {
+        // nobody answered in time: tell the client (504) and close, instead of a silent disconnect
+        WEBMaster &master = m_master;
+        const uint32_t id = m_id;
+        const uint64_t token = m_deferToken;
+        m_deferTimer = m_master.deadlines().add(std::chrono::seconds(seconds), [&master, id, token]() {
+            master.clients().post(id, [token](HTTPClient &client) {
+                client.completeDeferred(token, [](HTTPResponse &response) {
+                    response.forceClose();
+                    response.sendError(504, "The server did not produce a response in time.");
+                });
+            });
+        });
+    }
     return std::shared_ptr<AsyncResponse>(new AsyncResponse(m_master.clients(), m_id, m_deferToken));
 }
 
@@ -599,6 +621,8 @@ void HTTPClient::completeDeferred(uint64_t token, const AsyncResponse::Writer &w
         return;                         // stale handle: already answered, timed out or reused
     m_deferred = false;
     m_response.m_deferred = false;
+    m_master.deadlines().cancel(m_deferTimer);
+    m_deferTimer = 0;
     if (writer)
         writer(m_response);
     if (!m_response.isCommitted())

@@ -111,6 +111,9 @@ target_link_libraries(myapp PRIVATE RizWEB::RizWEB)     # pulls in the backend, 
 
 `rizweb -fetch https://example.com [-k]` is the built-in HTTP client on the command line.
 
+The demo server in `main.cpp` also shows both waiting styles: `GET /api/slow-worker/:id` (`offload`, a 3 s sleep standing in for a
+blocking database query) and `GET /api/slow-async/:id` (`defer`).
+
 ## Use as a library
 
 ### Routes, middleware, CORS, WebSocket

@@ -16,7 +16,7 @@ on:
       version:
         description: "Release version without the leading v (tag becomes v<version>)"
         required: true
-        default: "1.4.0"
+        default: "2.2.0"
       draft:
         description: "Create the release as a draft"
         type: boolean

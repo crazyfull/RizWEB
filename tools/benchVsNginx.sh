@@ -3,7 +3,7 @@
 #   tools/benchVsNginx.sh /path/to/rizweb
 set -euo pipefail
 RIZWEB=$(realpath "${1:?usage: $0 /path/to/rizweb}")
-WORK=$(mktemp -d); chmod 755 "$WORK"; trap 'pkill -f "$WORK" || true; nginx -c "$WORK/nginx.conf" -s stop 2>/dev/null || true' EXIT
+WORK=$(mktemp -d); chmod 755 "$WORK"; trap 'kill $(jobs -p) 2>/dev/null || true; pkill -x rizweb 2>/dev/null || true; nginx -c "$WORK/nginx.conf" -s stop 2>/dev/null || true' EXIT
 mkdir -p "$WORK/www" "$WORK/rizweb"
 python3 - "$WORK/www" <<'PY'
 import os, sys

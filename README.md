@@ -86,7 +86,7 @@ a ref that builds with a stock BoringSSL (`stock-boringssl-support` until merged
 Using the library package:
 
 ```cmake
-find_package(RizWEB REQUIRED PATHS /path/to/rizweb-lib-<version>-linux-x86_64)
+
 target_link_libraries(myapp PRIVATE RizWEB::RizWEB)     # pulls in the backend, BoringSSL and zlib automatically
 ```
 

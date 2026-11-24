@@ -77,9 +77,10 @@ and publishes, for each of the six targets, two archives plus `SHA256SUMS.txt`:
 | `rizweb-lib-<version>-<target>` | static library package: `lib/` (RizWEB, backend, BoringSSL, ...), `include/`, `lib/cmake/RizWEB/RizWEBConfig.cmake` |
 
 Native targets run the unit / integration tests and a smoke test in CI; macOS x86_64 is cross-compiled on an arm64 runner
-and is only built. An optional input builds a multi-arch Docker image for ghcr.io. **Status: the workflow passes `actionlint`
-and the Linux build and package were verified locally; it has not run on real GitHub runners yet, and the Windows / macOS
-(and Windows arm64) builds have never been run by the author - expect to fix small things on the first run.**
+and is only built. An optional input builds a multi-arch Docker image for ghcr.io. **Status: the workflow ran successfully on GitHub for all six targets (build, tests on the native ones, smoke test, both
+archives, checksums, draft release). The Docker image has not been built yet.** Windows and macOS were verified by CI only
+(build + tests + a plain `GET /` smoke test); the author did not run them by hand. `netRector` / `netRectorClient` must be at
+a ref that builds with a stock BoringSSL (`stock-boringssl-support` until merged).
 
 Using the library package:
 
@@ -261,8 +262,8 @@ instead of building a second copy.
   works on the netRector backend only and fails closed (the request is refused) on netRectorClient; on Windows / macOS give a CA
   bundle with `setCaFile` if the default roots are not found (not tested there).
 * **Validation / escaping are tools, not magic**: nothing is sanitised automatically; SQL needs parameterized queries.
-* **Platforms**: Linux x86_64 is the tested platform. Windows, macOS and arm64 builds come from the release workflow and have
-  not been run by the author. TLS under load, many client IPs and machines with more than 2 cores were not benchmarked.
+* **Platforms**: Linux x86_64 is the tested platform. Windows, macOS and arm64 are built and tested by the release workflow
+  (the async tests and a few POSIX-socket tests are skipped on Windows) but not exercised under load. TLS under load, many client IPs and machines with more than 2 cores were not benchmarked.
 * **Auth** is a simple session login for a protected path, not an identity system.
 
 ## Tests and benchmarks

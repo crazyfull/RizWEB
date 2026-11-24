@@ -163,15 +163,25 @@ TEST(asyncKeepsPipelinedOrder)
     ::close(fd);
 }
 
-TEST(asyncTimeoutClosesConnection)
+TEST(asyncTimeoutAnswers504ThenCloses)
 {
     int fd = connectLocal();
     CHECK(fd >= 0);
     std::string request = "GET /never HTTP/1.1\r\nHost: x\r\n\r\n";
+    auto start = std::chrono::steady_clock::now();
     ::send(fd, request.data(), request.size(), 0);
-    char buffer[256];
-    ssize_t n = ::recv(fd, buffer, sizeof(buffer), 0);      // blocks until the server gives up (AsyncTimeout = 2 s)
-    CHECK(n <= 0);
+    std::string all;
+    char buffer[2048];
+    for (;;) {                                  // reads until the server closes (AsyncTimeout = 2 s)
+        ssize_t n = ::recv(fd, buffer, sizeof(buffer), 0);
+        if (n <= 0)
+            break;
+        all.append(buffer, static_cast<size_t>(n));
+    }
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+    CHECK(all.find("504 Gateway Timeout") != std::string::npos);
+    CHECK(all.find("Connection: close") != std::string::npos);
+    CHECK(elapsed >= 1900 && elapsed < 3500);
     ::close(fd);
 }
 

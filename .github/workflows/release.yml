@@ -1,5 +1,6 @@
 name: Release (manual)
 
+# The version is read from src/clsVersion.h (the tag becomes v<version>); bump it there before releasing.
 # Runs only when started by hand (Actions tab -> "Release (manual)" -> Run workflow).
 #
 # For every target below it builds
@@ -13,10 +14,7 @@ name: Release (manual)
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "Release version without the leading v (tag becomes v<version>)"
-        required: true
-        default: "2.2.0"
+
       draft:
         description: "Create the release as a draft"
         type: boolean
@@ -44,7 +42,21 @@ permissions:
   packages: write
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      value: ${{ steps.read.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        run: |
+          f=src/clsVersion.h
+          v="$(grep -E '#define RIZWEB_VERSION_MAJOR' $f | awk '{print $3}').$(grep -E '#define RIZWEB_VERSION_MINOR' $f | awk '{print $3}').$(grep -E '#define RIZWEB_VERSION_PATCH' $f | awk '{print $3}')"
+          echo "version $v"
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: version
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -179,7 +191,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          V="${{ inputs.version }}"; T="${{ matrix.name }}"
+          V="${{ needs.version.outputs.value }}"; T="${{ matrix.name }}"
           cmake --install build --prefix stage
           EXE="rizweb.exe"; [ "$RUNNER_OS" = "Windows" ] || EXE="rizweb"
           [ "$RUNNER_OS" = "Windows" ] || strip "stage/bin/$EXE" || true
@@ -215,6 +227,7 @@ jobs:
 
   docker:
     if: ${{ inputs.docker }}
+    needs: version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -237,11 +250,11 @@ jobs:
             NETRECTOR_REF=${{ inputs.netrector_ref }}
             BORINGSSL_REF=${{ inputs.boringssl_ref }}
           tags: |
-            ${{ steps.image.outputs.name }}:${{ inputs.version }}
+            ${{ steps.image.outputs.name }}:${{ needs.version.outputs.value }}
             ${{ steps.image.outputs.name }}:latest
 
   release:
-    needs: build
+    needs: [version, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -260,7 +273,7 @@ jobs:
           FLAGS="--generate-notes"
           [ "${{ inputs.prerelease }}" = "true" ] && FLAGS="$FLAGS --prerelease"
           [ "${{ inputs.draft }}" = "true" ] && FLAGS="$FLAGS --draft"
-          gh release create "v${{ inputs.version }}" out/* \
+          gh release create "v${{ needs.version.outputs.value }}" out/* \
             --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \
-            --title "RizWEB ${{ inputs.version }}" $FLAGS
+            --title "RizWEB ${{ needs.version.outputs.value }}" $FLAGS

@@ -85,6 +85,36 @@ int main(int argc, char **argv)
         response.write("{\"hello\":\"" + Escape::json(request.param("name")) + "\"}");
         response.flush(200);
     });
+    // --- waiting handlers: the two ways to keep reactor threads free -------------------------------------
+    // 1) offload(): blocking work (sqlite, a synchronous library) runs on the worker pool.
+    //    Here a 3 second sleep stands in for the database query.
+    //    Try:  curl localhost:8080/api/slow-worker/42   (meanwhile other requests are answered at once)
+    server.get("/api/slow-worker/:id", server.offload([](const HTTPRequest &request, WorkerReply &reply) {
+        std::this_thread::sleep_for(std::chrono::seconds(3));            // <- blocking "query"
+        reply.setContentType("application/json; charset=utf-8");
+        reply.write("{\"id\":\"" + Escape::json(request.param("id")) + "\",\"via\":\"worker pool\"}");
+        reply.flush(200);
+    }));
+
+    // 2) defer(): the handler returns at once and the answer is sent later, from any thread. Use it with
+    //    something that calls you back (an async driver, HTTPFetcher::fetchAsync). The thread below only plays the
+    //    role of that driver's callback; a real one would not need a thread of yours.
+    //    Try:  curl localhost:8080/api/slow-async/42
+    server.get("/api/slow-async/:id", [](HTTPClient &, HTTPRequest &request, HTTPResponse &response) {
+        std::shared_ptr<AsyncResponse> async = response.defer();         // the reactor thread is free from here on
+        if (!async)
+            return response.internalServerError();
+        std::string id = request.param("id");
+        std::thread([async, id]() {
+            std::this_thread::sleep_for(std::chrono::seconds(3));        // <- "waiting for the database"
+            async->respond([id](HTTPResponse &out) {                      // runs on the connection's own thread
+                out.setContentType("application/json; charset=utf-8");
+                out.write("{\"id\":\"" + Escape::json(id) + "\",\"via\":\"defer\"}");
+                out.flush(200);
+            });
+        }).detach();
+    });
+
     server.post("/api/echo", [](HTTPClient &, HTTPRequest &request, HTTPResponse &response) {
         response.setContentType(request.headerField("content-type") ? *request.headerField("content-type") : "application/octet-stream");
         response.write(request.body());

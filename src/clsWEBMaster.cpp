@@ -120,6 +120,30 @@ HTTPRouter::Route &WEBMaster::uploadProgress(const std::string &pattern)
     });
 }
 
+RouteHandler WEBMaster::offload(WorkerHandler handler)
+{
+    return [this, handler](HTTPClient &, HTTPRequest &request, HTTPResponse &response) {
+        std::shared_ptr<AsyncResponse> async = response.defer();
+        if (!async) {
+            response.internalServerError("This request cannot be handled by a worker.");
+            return;
+        }
+        auto copy = std::make_shared<HTTPRequest>(request);     // the connection may close while the worker runs
+        bool queued = m_workers.submit([handler, copy, async]() {
+            WorkerReply reply(async);
+            try {
+                handler(*copy, reply);
+            } catch (...) {
+                reply.sendError(500);
+            }
+            if (!reply.sent())
+                reply.sendError(500, "The worker handler did not produce a response.");
+        });
+        if (!queued)
+            async->sendError(503, "The server is busy, try again later.");
+    };
+}
+
 bool WEBMaster::start()
 {
     if (m_running)
@@ -129,6 +153,7 @@ bool WEBMaster::start()
         RIZLOG_ERROR("no listener configured");
         return false;
     }
+    m_workers.start(m_settings.workerThreads, m_settings.workerQueueLimit);
     m_limiter.setMaxConnectionsPerIp(m_settings.maxConnectionsPerIp);
     m_limiter.setMaxRequestsPerSecond(m_settings.maxRequestsPerSecondPerIp);
     m_bodyLimit = [this](HTTPMethod method, const std::string &path) {
@@ -166,6 +191,7 @@ void WEBMaster::stop()
 {
     if (!m_running && !m_listeners)
         return;
+    m_workers.stop();                      // first: a running job still answers through a live reactor
     if (m_ownsHost) {
 #if defined(RIZWEB_USE_NETRECTOR)
         m_host->stop();                    // closes every connection and listener, then joins the shards

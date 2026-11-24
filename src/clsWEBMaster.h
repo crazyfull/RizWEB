@@ -9,6 +9,8 @@
 #include "HTTP/clsHTTPMultipartUpload.h"
 #include "HTTP/clsHTTPRouter.h"
 #include "HTTP/clsHTTPUploadTracker.h"
+#include "HTTP/clsHTTPWorkerReply.h"
+#include "Utils/clsWorkerPool.h"
 #include "HTTP/clsHTTPResponse.h"
 #include "HTTP/clsHTTPSecurity.h"
 #include "HTTP/clsHTTPStaticFiles.h"
@@ -65,6 +67,13 @@ public:
 
     // Routing (register before start()). The returned route can set a per-route body limit:
     //   web.post("/upload", handler).bodyLimit = 64 * 1024 * 1024;
+    // Handler for work that blocks (sqlite, a synchronous client library, disk): it runs on a worker thread, never on a
+    // reactor thread, and answers through a WorkerReply. The request is copied for it. When all workers are busy and the
+    // queue (WorkerQueue) is full the client gets "503" immediately.
+    //   web.get("/user/:id", web.offload([](const HTTPRequest &req, WorkerReply &reply) { ...blocking work...; reply.flush(200); }));
+    using WorkerHandler = std::function<void(const HTTPRequest &, WorkerReply &)>;
+    RouteHandler offload(WorkerHandler handler);
+
     HTTPRouter::Route &get(const std::string &pattern, RouteHandler handler) { return m_router.add(HTTPMethod::Get, pattern, std::move(handler)); }
     HTTPRouter::Route &post(const std::string &pattern, RouteHandler handler) { return m_router.add(HTTPMethod::Post, pattern, std::move(handler)); }
     HTTPRouter::Route &put(const std::string &pattern, RouteHandler handler) { return m_router.add(HTTPMethod::Put, pattern, std::move(handler)); }
@@ -120,6 +129,7 @@ private:
     HTTPStaticFiles m_staticFiles;
     UploadTracker m_uploadTracker;
     HTTPRouter m_router;
+    WorkerPool m_workers;
     HTTPCors m_cors;
     HTTPLimiter m_limiter;
     std::vector<Middleware> m_middleware;

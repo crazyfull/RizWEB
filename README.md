@@ -18,6 +18,7 @@ The backend is chosen at configure time; the source of RizWEB is the same everyw
 | HTTP/1.1 | keep-alive, pipelining, `100-continue`, `Content-Length` and chunked request bodies, HEAD, smuggling checks |
 | Static files | `realpath` confinement to the web root, dot-files hidden, Range, ETag / Last-Modified / 304, gzip / deflate (compressed once, cached), `Cache-Control` per file type, escaped directory listing, sendfile(2) on Linux, back-pressure aware streaming, small in-memory file cache (`FileCacheSeconds`) |
 | Responses | built in pooled buffers (no `std::string` for short or dynamic replies), head + body sent in one `writev` / one TLS record; **async answers**: `res.defer()` frees the reactor thread and the reply is produced later from any thread |
+| Blocking work | `web.offload(...)`: handlers that block (sqlite, synchronous libraries) run on a worker thread pool with a bounded queue (`503` when full); the reactor threads never wait |
 | Routing | Go-like: `get / post / put / patch / del`, `:name` parameters, `*` wildcard, automatic `405` + `Allow`, fall-through to a default handler and then static files |
 | Middleware | chain that runs before routing; return `true` to answer and stop |
 | CORS | `web.cors()`: origins, methods, headers, credentials, max-age; preflight is answered for you |
@@ -100,6 +101,7 @@ target_link_libraries(myapp PRIVATE RizWEB::RizWEB)     # pulls in the backend, 
 | `LocatedRoot`, `ResourceDir`, `MimeTypesPath` | | web root and resources |
 | `IsDirectoryBrowsing` | | escaped directory listing |
 | `IsUseAuthentication`, `SecurePath`, `AuthRoot`, `SessionExpirationTime` | | login protected area |
+| `WorkerThreads`, `WorkerQueue` | 4, 1024 | worker pool for `offload()` handlers and the number of jobs that may wait before requests get `503` |
 | `AsyncTimeout` | 30 | seconds a deferred (async) response may stay unanswered before the connection is closed |
 | `KeepAliveTime`, `MaxBodyBytes`, `MaxUploadBytes`, `MaxWebSocketMessageBytes` | | limits (0 = unlimited where it makes sense) |
 | `MaxConnectionsPerIp`, `MaxRequestsPerSecondPerIp` | | per-IP limits (extra connections closed, `429` + `Retry-After`) |
@@ -166,6 +168,27 @@ web.get("/weather", [&](HTTPClient &, HTTPRequest &, HTTPResponse &res) {
 `respond()` works from any thread and returns `false` if the client has gone; `send(status, type, body)` and
 `sendError()` are shortcuts. If nobody answers within `AsyncTimeout` the connection is closed. `defer()` is not available
 on streaming (upload) routes.
+
+### Blocking work: worker pool (sqlite, synchronous libraries)
+
+Code that blocks cannot be made async from the outside. Run it on worker threads with `web.offload()`: the handler gets a
+copy of the request and a `WorkerReply` (status, headers, body are collected and sent by the connection's own reactor
+thread). Reactor threads stay free, pipelined requests keep their order, and when every worker is busy and `WorkerQueue`
+jobs are waiting the client immediately gets `503` instead of the server piling up work.
+
+```cpp
+web.settings().workerThreads = 4;                                // pool size
+web.get("/api/user/:id", web.offload([](const HTTPRequest &req, WorkerReply &reply) {
+    thread_local Database db("app.sqlite");                      // one connection per worker thread (sqlite rule)
+    std::string name = db.queryName(req.param("id"));            // blocks - fine here
+    reply.setContentType("application/json; charset=utf-8");
+    reply.write("{\"name\":\"" + Escape::json(name) + "\"}");
+    reply.flush(200);
+}));
+```
+
+Which one to use: no waiting -> plain handler (fastest); blocking library -> `offload()`; a non-blocking client that calls you
+back (`HTTPFetcher::fetchAsync`, an async database driver) -> `res.defer()`.
 
 ### Validate input, escape output
 
@@ -253,7 +276,7 @@ instead of building a second copy.
 
 * **Threads**: handlers run on reactor threads (several with netRector). Protect shared state. A handler that waits (blocking
   `HTTPFetcher` call, `sleep`, a slow query) blocks its reactor thread and every connection on it: use `res.defer()`
-  (see "Async responses"). `web.clients().post(id, fn)` runs code on a client's own thread.
+  (see "Async responses"). `web.clients().post(id, fn)` runs code on a client's own thread. `offload()` handlers run on pool threads: protect shared state there too.
 * **Descriptors**: every connection and every file being sent needs a descriptor (large files are not shared between
   streams). RizWEB raises its soft limit to the hard limit at start-up; 10,000 simultaneous large downloads need ~20,000.
 * **File cache**: changes are picked up after `FileCacheSeconds` (default 1 s); content is cached only for files up to 64 KB.
@@ -269,7 +292,7 @@ instead of building a second copy.
 ## Tests and benchmarks
 
 ```sh
-cmake --build build && ctest --test-dir build --output-on-failure     # 41 tests: parser, chunked, router, limiter, WebSocket,
+cmake --build build && ctest --test-dir build --output-on-failure     # 43 tests: parser, chunked, router, limiter, WebSocket,
                                                                        # multipart / upload (split reads, chunked, progress),
                                                                        # validator, escaping, HTTP client (blocking, async, redirects, TLS)
 python3 tools/bench.py 127.0.0.1 8080 /ip 32 5                        # dependency-free load generator

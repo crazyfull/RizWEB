@@ -90,6 +90,7 @@ private:
     bool m_webSocket = false;
     bool m_deferred = false;             // the answer to the current request is produced later; pipelined input waits
     uint64_t m_deferToken = 0;
+    uint64_t m_deferTimer = 0;           // DeadlineQueue entry that answers 504 when nobody does
     bool m_streamRequest = false;        // the current request belongs to a streaming route (cannot be deferred)
     bool m_busy = false;                 // a file is being streamed; pipelined input waits
     void *m_argument = nullptr;

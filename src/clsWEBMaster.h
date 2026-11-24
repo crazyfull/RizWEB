@@ -10,7 +10,6 @@
 #include "HTTP/clsHTTPRouter.h"
 #include "HTTP/clsHTTPUploadTracker.h"
 #include "HTTP/clsHTTPWorkerReply.h"
-#include "Utils/clsDeadlineQueue.h"
 #include "Utils/clsWorkerPool.h"
 #include "HTTP/clsHTTPResponse.h"
 #include "HTTP/clsHTTPSecurity.h"
@@ -63,7 +62,6 @@ public:
     HTTPClientList &clients() { return m_clients; }
     HTTPStaticFiles &staticFiles() { return m_staticFiles; }
     HTTPRouter &router() { return m_router; }
-    DeadlineQueue &deadlines() { return m_deadlines; }
     HTTPCors &cors() { return m_cors; }
     HTTPLimiter &limiter() { return m_limiter; }
 
@@ -132,7 +130,6 @@ private:
     UploadTracker m_uploadTracker;
     HTTPRouter m_router;
     WorkerPool m_workers;
-    DeadlineQueue m_deadlines;          // timeouts of deferred responses
     HTTPCors m_cors;
     HTTPLimiter m_limiter;
     std::vector<Middleware> m_middleware;

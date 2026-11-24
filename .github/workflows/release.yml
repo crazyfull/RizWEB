@@ -14,7 +14,6 @@ name: Release (manual)
 on:
   workflow_dispatch:
     inputs:
-
       draft:
         description: "Create the release as a draft"
         type: boolean

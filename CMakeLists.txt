@@ -1,4 +1,13 @@
 cmake_minimum_required(VERSION 3.16)
+# The version lives only in src/clsVersion.h
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/clsVersion.h" _rizweb_version_h)
+foreach(_part MAJOR MINOR PATCH)
+    if(NOT _rizweb_version_h MATCHES "#define RIZWEB_VERSION_${_part} ([0-9]+)")
+        message(FATAL_ERROR "RIZWEB_VERSION_${_part} not found in src/clsVersion.h")
+    endif()
+    set(_rizweb_${_part} ${CMAKE_MATCH_1})
+endforeach()
+project(RizWEB VERSION ${_rizweb_MAJOR}.${_rizweb_MINOR}.${_rizweb_PATCH} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

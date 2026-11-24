@@ -86,7 +86,7 @@ a ref that builds with a stock BoringSSL (`stock-boringssl-support` until merged
 Using the library package:
 
 ```cmake
-
+find_package(RizWEB REQUIRED PATHS /path/to/rizweb-lib-<version>-linux-x86_64)
 target_link_libraries(myapp PRIVATE RizWEB::RizWEB)     # pulls in the backend, BoringSSL and zlib automatically
 ```
 
@@ -306,7 +306,7 @@ tools/benchVsNginx.sh build/rizweb                                    # needs wr
 
 A handler that builds a ~20 byte reply (`/ip`) against nginx `return 200 "..."` (no disk, no proxy); `tools/benchDynamic.sh`.
 Response head and body are built in pooled buffers and sent with one `writev` (the first version of this path concatenated
-`std::string`s and was 24 % behind nginx at 512 connections). Two complete runs, version 1.5.0, 2-core cloud VM with wrk on the
+`std::string`s and was 24 % behind nginx at 512 connections). Two complete runs, version 2.3.0, 2-core cloud VM with wrk on the
 same machine, 8 s per cell:
 
 | conns | RizWEB req/s | nginx req/s | RizWEB p99 | nginx p99 |
@@ -318,7 +318,7 @@ On par with nginx within the noise of this VM (differences below ~10 % mean noth
 
 ### RizWEB vs nginx 1.24 (static files)
 
-`tools/benchVsNginx.sh`, version 1.5.0, same machine and method as above (nginx with `open_file_cache`, 2 workers, localhost,
+`tools/benchVsNginx.sh`, version 2.3.0, same machine and method as above (nginx with `open_file_cache`, 2 workers, localhost,
 plain HTTP, every request checked for 2xx). Two complete runs; each cell shows the lower and the higher value.
 
 | file | conns | RizWEB req/s | nginx req/s | RizWEB p99 | nginx p99 |
@@ -338,7 +338,7 @@ server process between runs, which is the likely reason) and it did not reproduc
 ### 10k+ concurrent connections
 
 `tools/benchHighConnections.sh` (wrk, keep-alive, 554 B file, 12 s per run, same VM, nginx `worker_connections 16384`,
-two runs each; sandbox limit of 20000 open files per process), version 1.5.0:
+two runs each; sandbox limit of 20000 open files per process), version 2.3.0:
 
 | connections | server | req/s | p99 | RSS |
 |---|---|---|---|---|
